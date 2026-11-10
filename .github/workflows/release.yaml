@@ -30,7 +30,7 @@ jobs:
             ext: ""
             archive: tar.gz
             prepare: true
-          - os: macos-14
+          - os: macos-15
             goos: darwin
             goarch: arm64
             os_title: Darwin

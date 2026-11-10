@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"math"
 	"testing"
+	"time"
 )
 
 func TestParseDayVolume(t *testing.T) {
@@ -126,5 +127,45 @@ func TestProcessDayFileParsesBlockBreadth(t *testing.T) {
 	}
 	if rows[0].UpCount != 36 || rows[0].DownCount != 59 {
 		t.Errorf("breadth = (%d, %d), want (36, 59)", rows[0].UpCount, rows[0].DownCount)
+	}
+}
+
+func TestProcessDayFileAfterFiltersOldRecords(t *testing.T) {
+	data := make([]byte, recordSize*2)
+	for i, day := range []uint32{20260102, 20260105} {
+		offset := i * recordSize
+		binary.LittleEndian.PutUint32(data[offset:offset+4], day)
+		binary.LittleEndian.PutUint32(data[offset+4:offset+8], 1000)
+		binary.LittleEndian.PutUint32(data[offset+8:offset+12], 1000)
+		binary.LittleEndian.PutUint32(data[offset+12:offset+16], 1000)
+		binary.LittleEndian.PutUint32(data[offset+16:offset+20], 1000)
+	}
+
+	rows, err := processDayFileAfter(data, "sh600000", time.Date(2026, 1, 2, 0, 0, 0, 0, time.Local))
+	if err != nil {
+		t.Fatalf("processDayFileAfter: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("len(rows) = %d, want 1", len(rows))
+	}
+	if got := rows[0].Date.Format("2006-01-02"); got != "2026-01-05" {
+		t.Fatalf("date = %s, want 2026-01-05", got)
+	}
+}
+
+func TestProcessDayFileScalesConvertibleBond(t *testing.T) {
+	data := make([]byte, recordSize)
+	binary.LittleEndian.PutUint32(data[0:4], 20150306)
+	binary.LittleEndian.PutUint32(data[4:8], 1_435_000)
+	binary.LittleEndian.PutUint32(data[8:12], 1_483_000)
+	binary.LittleEndian.PutUint32(data[12:16], 1_432_000)
+	binary.LittleEndian.PutUint32(data[16:20], 1_459_300)
+
+	rows, err := processDayFile(data, "sh113001")
+	if err != nil {
+		t.Fatalf("processDayFile: %v", err)
+	}
+	if rows[0].Close != 145.93 {
+		t.Fatalf("close = %v, want 145.93", rows[0].Close)
 	}
 }

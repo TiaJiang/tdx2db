@@ -12,6 +12,8 @@ func TestClassifyCodeSeparatesBShare(t *testing.T) {
 		{symbol: "sh900936", want: ClassBStock},
 		{symbol: "sz200541", want: ClassBStock},
 		{symbol: "sh510300", want: ClassETF},
+		{symbol: "sh113001", want: ClassCBond},
+		{symbol: "sz123001", want: ClassCBond},
 	}
 
 	for _, tt := range tests {
@@ -32,6 +34,8 @@ func TestPriceScaleKeepsBSharePrecision(t *testing.T) {
 		{symbol: "sh900936", want: 1000},
 		{symbol: "sz200541", want: 1000},
 		{symbol: "sh510300", want: 1000},
+		{symbol: "sh113001", want: 10000},
+		{symbol: "sz123001", want: 10000},
 	}
 
 	for _, tt := range tests {

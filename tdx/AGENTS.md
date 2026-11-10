@@ -1,6 +1,6 @@
 # TDX DATA PARSING
 
-**Purpose:** Parse 通达信(TDX) binary format files (.day, .01), 假期日历, and online OpenTDX quote/block data
+**Purpose:** Parse 通达信(TDX) binary format files (.day, .01), 假期日历, and online metadata through eltdx
 
 ## STRUCTURE
 ```
@@ -11,9 +11,10 @@
 ├── merge_test.go
 ├── gbbq.go        # 股本变迁 parsing
 ├── holidays.go    # 交易日历解析 (zhb.zip → needini.dat)
-├── client.go      # OpenTDX protocol client/session helpers
-├── block.go       # 在线板块/行业/概念信息 + 成分关系拉取
-├── stock.go       # 在线代码名称拉取 (quote server 0x44d)
+├── eltdx.go       # embedded Python bridge runner
+├── eltdx_online.py # eltdx code-list / board fetcher
+├── block.go       # 在线板块/行业/概念信息 + 成分关系转换
+├── stock.go       # 在线代码名称转换
 ├── gbbq_var.go    # TDX datatool variable definitions
 ├── datatool.go    # Embedded datatool interface (Linux only)
 └── embed/         # Embedded TDX datatool binary
@@ -25,9 +26,9 @@
 | Add new K-line format | kline.go | Follow 32-byte record pattern |
 | Parse holidays | holidays.go | needini.dat 文本解析 |
 | Modify gbbq parsing | gbbq.go | Uses embedded datatool |
-| Modify online block data | block.go | OpenTDX protocol block/category/member requests |
-| Modify online code names | stock.go | TDX quote server 0x44d interface |
-| Modify OpenTDX session/protocol | client.go | Connection, request/response framing |
+| Modify online block data | block.go + eltdx_online.py | eltdx board list/member API |
+| Modify online code names | stock.go + eltdx_online.py | eltdx code table API |
+| Modify Python bridge | eltdx.go | embedded script execution + JSON decoding |
 | TDX binary format | All files | Little-endian byte order |
 
 ## CONVENTIONS
@@ -42,7 +43,7 @@
 - Min: `year = date/2048 + 2004`, `month = (date%2048)/100`, `day = (date%2048)%100`
 
 **Price conversion:**
-- 价格刻度由 `model.PriceScale(symbol)` 给出：股票/指数/板块 = 100，ETF/LOF/B股 = 1000
+- 价格刻度由 `model.PriceScale(symbol)` 给出：股票/指数/板块 = 100，ETF/LOF/B股 = 1000，可转债 = 10000
 - 解析每条记录时按 symbol 取 scale，再 `float64(raw) / scale`
 - Amount stored as float32 bits
 
@@ -54,6 +55,7 @@
 **Online data:**
 - `FetchOnlineBlocks(ctx)` returns `[]model.BlockInfo` + `[]model.BlockMember` for block/industry/concept imports
 - `FetchOnlineSymbolNames(ctx)` returns `[]model.SymbolName` for online code-name imports, filtering stock / etf / index classes
+- `eltdx_online.py` is embedded into the Go binary and executed with Python; the runtime requires Python >= 3.10 and `eltdx`
 - These online fetchers are update-time helpers; raw daily ingestion and basic/factor calculations still use parsed K-line files + `raw_symbol_class`
 
 ## ANTI-PATTERNS
@@ -67,6 +69,7 @@
 - Remove context checks in loops - prevents graceful shutdown
 - Commit embedded binary to git - downloaded at build time
 - Use big-endian byte order - TDX uses little-endian
+- Reimplement 7709 request framing or response parsing in Go - use eltdx
 
 ## NOTES
 

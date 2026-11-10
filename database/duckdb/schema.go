@@ -50,12 +50,25 @@ func (d *DuckDBDriver) createTableInternal(meta *model.TableMeta) error {
 	return nil
 }
 
+func (d *DuckDBDriver) dropDeprecatedViewsInternal() error {
+	for _, name := range model.DeprecatedViewNames() {
+		if _, err := d.db.Exec("DROP VIEW IF EXISTS " + name); err != nil {
+			return fmt.Errorf("failed to drop deprecated view %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // InitSchema 创建所有表 + 视图，表与视图定义均来自 model registry。
 func (d *DuckDBDriver) InitSchema() error {
 	for _, t := range model.AllTables() {
 		if err := d.createTableInternal(t); err != nil {
 			return fmt.Errorf("failed to create table %s: %w", t.TableName, err)
 		}
+	}
+
+	if err := d.dropDeprecatedViewsInternal(); err != nil {
+		return err
 	}
 
 	for _, view := range model.AllViews() {

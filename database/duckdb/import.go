@@ -39,7 +39,55 @@ func (d *DuckDBDriver) TruncateTable(meta *model.TableMeta) error {
 }
 
 func (d *DuckDBDriver) ImportKlineDaily(path string) error {
-	return d.ImportCSV(model.TableKlineDaily, path)
+	var colMaps []string
+	for _, col := range model.TableKlineDaily.Columns {
+		colMaps = append(colMaps, fmt.Sprintf("'%s': '%s'", col.Name, d.mapType(col.Type)))
+	}
+
+	tx, err := d.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin kline import: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_kline_daily"); err != nil {
+		return fmt.Errorf("failed to clear kline staging table: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_kline_daily AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s},
+			dateformat='%%Y-%%m-%%d'
+		)
+	`, path, strings.Join(colMaps, ", "))); err != nil {
+		return fmt.Errorf("failed to stage kline csv: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		DELETE FROM %s target
+		USING incoming_kline_daily incoming
+		WHERE target.symbol = incoming.symbol AND target.date = incoming.date
+	`, model.TableKlineDaily.TableName)); err != nil {
+		return fmt.Errorf("failed to replace existing kline rows: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT DISTINCT * FROM incoming_kline_daily
+	`, model.TableKlineDaily.TableName)); err != nil {
+		return fmt.Errorf("failed to insert kline rows: %w", err)
+	}
+
+	if _, err := tx.Exec("DROP TABLE incoming_kline_daily"); err != nil {
+		return fmt.Errorf("failed to drop kline staging table: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit kline import: %w", err)
+	}
+	return nil
 }
 
 func (d *DuckDBDriver) ImportKline1Min(path string) error {
@@ -47,16 +95,184 @@ func (d *DuckDBDriver) ImportKline1Min(path string) error {
 }
 
 func (d *DuckDBDriver) ImportGBBQ(path string) error {
-	d.TruncateTable(model.TableGbbq)
+	if err := d.TruncateTable(model.TableGbbq); err != nil {
+		return err
+	}
 	return d.ImportCSV(model.TableGbbq, path)
 }
 
-func (d *DuckDBDriver) ImportBasic(path string) error {
-	return d.ImportCSV(model.TableBasicDaily, path)
+func (d *DuckDBDriver) ImportBasic(path string, rebuildSymbols []string) error {
+	var colMaps []string
+	for _, col := range model.TableBasicDaily.Columns {
+		colMaps = append(colMaps, fmt.Sprintf("'%s': '%s'", col.Name, d.mapType(col.Type)))
+	}
+
+	tx, err := d.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin basic import: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_basic_daily"); err != nil {
+		return fmt.Errorf("failed to clear basic staging table: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_basic_daily AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s},
+			dateformat='%%Y-%%m-%%d'
+		)
+	`, path, strings.Join(colMaps, ", "))); err != nil {
+		return fmt.Errorf("failed to stage basic csv: %w", err)
+	}
+
+	if len(rebuildSymbols) > 0 {
+		if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_basic_rebuild_symbols"); err != nil {
+			return fmt.Errorf("failed to clear basic rebuild symbol staging table: %w", err)
+		}
+		if _, err := tx.Exec("CREATE TEMP TABLE incoming_basic_rebuild_symbols (symbol VARCHAR)"); err != nil {
+			return fmt.Errorf("failed to create basic rebuild symbol staging table: %w", err)
+		}
+		stmt, err := tx.Preparex("INSERT INTO incoming_basic_rebuild_symbols (symbol) VALUES (?)")
+		if err != nil {
+			return fmt.Errorf("failed to prepare basic rebuild symbols: %w", err)
+		}
+		for _, symbol := range rebuildSymbols {
+			if _, err := stmt.Exec(symbol); err != nil {
+				stmt.Close()
+				return fmt.Errorf("failed to stage basic rebuild symbol %s: %w", symbol, err)
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			return fmt.Errorf("failed to close basic rebuild symbol statement: %w", err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`
+			DELETE FROM %s target
+			WHERE target.symbol IN (
+				SELECT symbol FROM incoming_basic_rebuild_symbols
+			)
+		`, model.TableBasicDaily.TableName)); err != nil {
+			return fmt.Errorf("failed to replace rebuilt basic symbols: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		DELETE FROM %s target
+		USING incoming_basic_daily incoming
+		WHERE target.symbol = incoming.symbol AND target.date = incoming.date
+	`, model.TableBasicDaily.TableName)); err != nil {
+		return fmt.Errorf("failed to replace existing basic rows: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT DISTINCT * FROM incoming_basic_daily
+	`, model.TableBasicDaily.TableName)); err != nil {
+		return fmt.Errorf("failed to insert basic rows: %w", err)
+	}
+
+	if _, err := tx.Exec("DROP TABLE incoming_basic_daily"); err != nil {
+		return fmt.Errorf("failed to drop basic staging table: %w", err)
+	}
+	if len(rebuildSymbols) > 0 {
+		if _, err := tx.Exec("DROP TABLE incoming_basic_rebuild_symbols"); err != nil {
+			return fmt.Errorf("failed to drop basic rebuild symbol staging table: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit basic import: %w", err)
+	}
+	return nil
 }
 
-func (d *DuckDBDriver) ImportAdjustFactors(path string) error {
-	return d.ImportCSV(model.TableAdjustFactor, path)
+func (d *DuckDBDriver) ImportAdjustFactors(path string, rebuildSymbols []string) error {
+	var colMaps []string
+	for _, col := range model.TableAdjustFactor.Columns {
+		colMaps = append(colMaps, fmt.Sprintf("'%s': '%s'", col.Name, d.mapType(col.Type)))
+	}
+
+	tx, err := d.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin factor import: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_adjust_factor"); err != nil {
+		return fmt.Errorf("failed to clear factor staging table: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_adjust_factor AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s},
+			dateformat='%%Y-%%m-%%d'
+		)
+	`, path, strings.Join(colMaps, ", "))); err != nil {
+		return fmt.Errorf("failed to stage factor csv: %w", err)
+	}
+
+	if len(rebuildSymbols) > 0 {
+		if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_factor_rebuild_symbols"); err != nil {
+			return fmt.Errorf("failed to clear factor rebuild symbol staging table: %w", err)
+		}
+		if _, err := tx.Exec("CREATE TEMP TABLE incoming_factor_rebuild_symbols (symbol VARCHAR)"); err != nil {
+			return fmt.Errorf("failed to create factor rebuild symbol staging table: %w", err)
+		}
+		stmt, err := tx.Preparex("INSERT INTO incoming_factor_rebuild_symbols (symbol) VALUES (?)")
+		if err != nil {
+			return fmt.Errorf("failed to prepare factor rebuild symbols: %w", err)
+		}
+		for _, symbol := range rebuildSymbols {
+			if _, err := stmt.Exec(symbol); err != nil {
+				stmt.Close()
+				return fmt.Errorf("failed to stage factor rebuild symbol %s: %w", symbol, err)
+			}
+		}
+		if err := stmt.Close(); err != nil {
+			return fmt.Errorf("failed to close factor rebuild symbol statement: %w", err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`
+			DELETE FROM %s target
+			WHERE target.symbol IN (
+				SELECT symbol FROM incoming_factor_rebuild_symbols
+			)
+		`, model.TableAdjustFactor.TableName)); err != nil {
+			return fmt.Errorf("failed to replace rebuilt factor symbols: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		DELETE FROM %s target
+		USING incoming_adjust_factor incoming
+		WHERE target.symbol = incoming.symbol AND target.date = incoming.date
+	`, model.TableAdjustFactor.TableName)); err != nil {
+		return fmt.Errorf("failed to replace existing factor rows: %w", err)
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT DISTINCT * FROM incoming_adjust_factor
+	`, model.TableAdjustFactor.TableName)); err != nil {
+		return fmt.Errorf("failed to insert factor rows: %w", err)
+	}
+
+	if _, err := tx.Exec("DROP TABLE incoming_adjust_factor"); err != nil {
+		return fmt.Errorf("failed to drop factor staging table: %w", err)
+	}
+	if len(rebuildSymbols) > 0 {
+		if _, err := tx.Exec("DROP TABLE incoming_factor_rebuild_symbols"); err != nil {
+			return fmt.Errorf("failed to drop factor rebuild symbol staging table: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit factor import: %w", err)
+	}
+	return nil
 }
 
 func (d *DuckDBDriver) ImportHolidays(path string) error {

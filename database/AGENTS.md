@@ -42,13 +42,15 @@
 - `InitSchema()` - Create tables + views (auto-registered via model package)
 - `ReadSchemaVersion()/WriteSchemaVersion()` - _meta table schema version read/write (no judgment logic)
 - `Import*()` - CSV import: KlineDaily, Kline1Min, AdjustFactors, GBBQ, Basic, Holidays, BlockInfo, BlockMembers, SymbolNames
+- `ImportBasic(csv, rebuildSymbols)` - normal imports upsert by `(symbol,date)`; listed symbols are deleted first for full history rebuild
 - `TruncateTable(meta)` - Clear table (used by full-recalc tasks)
 - `Query()` - Generic query with conditions map
 - `QueryKlineDaily()` - Date range filtered OHLCV data
 - `GetLatestDate()` - Used by cron for incremental updates
-- `GetSymbolsByClass(classes ...)` - Symbols filtered by class (calc 端传 stock + etf)
+- `GetSymbolsByClass(classes ...)` - Symbols filtered by class (calc 端传 stock + etf + bstock)
 - `RebuildSymbolClass()` - Rebuild symbol_class table from raw_kline_daily
-- `GetBasicsBySymbol()` - BasicDaily data (含 PreClose) for factor calculation
+- `GetBasicsBySymbol()` - BasicDaily data (含 PreClose) for full factor rebuild
+- `GetBasicsBySymbolSince()` / `GetLatestBasic()` - incremental basic/factor calculation ranges
 - `GetGbbq()` - All gbbq records (loaded once, indexed in calc)
 - `GetHolidays()` - 全量节假日 (workflow.BuildWorkPlan 启动时读取)
 
@@ -82,7 +84,7 @@
 
 **Table naming:**
 - `raw_*` - Imported data tables (raw_kline_daily, raw_basic_daily, raw_adjust_factor, raw_gbbq, raw_symbol_class, raw_holidays, raw_kline_1min, raw_tdx_blocks_info, raw_tdx_blocks_member, raw_symbol_name)
-- `v_*` - Views: v_{stock,etf}_{bfq,qfq,hfq} 6 个视图，按 class 过滤、stock 价格 ROUND 2 位 / etf 3 位
+- `v_*` - Views: v_{stock,etf,bstock}_{qfq,hfq} 6 个复权视图 + `v_index`，按 class 过滤、stock/指数价格 ROUND 2 位 / etf、bstock 3 位；ETF 视图不含 turnover/floatmv/totalmv；指数视图只读 raw_kline_daily；InitSchema 会幂等删除 model.DeprecatedViewNames() 中的旧 BFQ 视图
 - `_meta` - Schema version and metadata (key/value)
 - Tables auto-registered via `model.SchemaFromStruct()`, views via `model.DefineView()`
 - View implementations are driver-specific：stock 视图在 `views_stock.go`、ETF 视图在 `views_etf.go`，分别通过 `registerStockViews()` / `registerETFViews()` 挂到 driver 的 `viewImpls` map，再由 `schema.go::InitSchema` 编排创建

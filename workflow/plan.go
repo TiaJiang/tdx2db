@@ -53,36 +53,66 @@ func BuildWorkPlan(db database.DataRepository, today time.Time) (*WorkPlan, erro
 	plan.Calendar = cal
 	plan.LastTradingDay = cal.LastTradingDayOnOrBefore(today)
 
-	dailyLatest, err := db.GetLatestDate(model.TableKlineDaily.TableName, "date")
+	dailyDates, err := db.GetLatestDates(model.TableKlineDaily.TableName, "date")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest daily date: %w", err)
 	}
-	basicLatest, err := db.GetLatestDate(model.TableBasicDaily.TableName, "date")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get latest basic date: %w", err)
-	}
-	factorLatest, err := db.GetLatestDate(model.TableAdjustFactor.TableName, "date")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get latest factor date: %w", err)
-	}
-
-	// 空库：交给 init 流程；此处不标任何 Need，调用方自行决定。
+	dailyLatest := latestDateInMap(dailyDates)
 	if dailyLatest.IsZero() {
 		plan.Reason = "🛑 数据库无日线数据，请先运行 init"
 		return plan, nil
 	}
 
+	basicDates, err := db.GetLatestDates(model.TableBasicDaily.TableName, "date")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest basic date: %w", err)
+	}
+	factorDates, err := db.GetLatestDates(model.TableAdjustFactor.TableName, "date")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest factor date: %w", err)
+	}
+	symbols, err := db.GetSymbolsByClass(model.ClassStock, model.ClassETF, model.ClassBStock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query calculation symbols: %w", err)
+	}
+	invalidFactors, err := db.HasInvalidFactors()
+	if err != nil {
+		return nil, err
+	}
+
 	plan.NeedDaily = dailyLatest.Before(plan.LastTradingDay)
 	// gbbq 与日线同频：日线没新数据时 gbbq 也无须更新。
 	plan.NeedGbbq = plan.NeedDaily
-	// basic/factor 要追赶 daily；如果 daily 将更新，那之后也必须重算。
-	plan.NeedBasic = plan.NeedDaily || basicLatest.Before(dailyLatest)
-	plan.NeedFactor = plan.NeedDaily || factorLatest.Before(basicLatest)
+	// basic/factor 必须按标判断，避免全库 MAX(date) 掩盖新增或滞后的 bstock。
+	plan.NeedBasic = plan.NeedDaily
+	plan.NeedFactor = plan.NeedDaily || invalidFactors
+	for _, symbol := range symbols {
+		dailyDate, hasDaily := dailyDates[symbol]
+		basicDate, hasBasic := basicDates[symbol]
+		factorDate, hasFactor := factorDates[symbol]
+
+		if !hasBasic || (hasDaily && dateBefore(basicDate, dailyDate)) {
+			plan.NeedBasic = true
+		}
+		if !hasFactor || (hasBasic && dateBefore(factorDate, basicDate)) {
+			plan.NeedFactor = true
+		}
+	}
 	// holidays 来自 gbbq.zip，与 gbbq 同频刷新即可。
 	plan.NeedHolidays = plan.NeedGbbq
 
 	plan.Reason = describePlan(plan, dailyLatest)
 	return plan, nil
+}
+
+func latestDateInMap(dates map[string]time.Time) time.Time {
+	var latest time.Time
+	for _, date := range dates {
+		if date.After(latest) {
+			latest = date
+		}
+	}
+	return latest
 }
 
 func describePlan(plan *WorkPlan, dailyLatest time.Time) string {

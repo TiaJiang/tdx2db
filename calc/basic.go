@@ -25,15 +25,25 @@ type xdxrInfo struct {
 type GbbqIndex map[string][]model.GbbqData
 
 type BasicContext struct {
-	DB        database.DataRepository
-	GbbqIndex GbbqIndex
+	DB               database.DataRepository
+	GbbqIndex        GbbqIndex
+	LatestBasics     map[string]model.BasicDaily
+	IncrementalKline map[string][]model.KlineDay
 }
 
-// ExportBasicDailyToCSV 计算并导出 BasicDaily 数据 (覆盖 stock + etf)。
+type BasicExportOptions struct {
+	FullRecalc     bool
+	Symbols        []string
+	RebuildSymbols []string
+}
+
+// ExportBasicDailyToCSV 计算并导出 BasicDaily 数据 (覆盖 stock + etf + bstock)。
+// Symbols 为 nil 时导出全部 stock/etf/bstock；非 nil 时仅导出指定标的。
 func ExportBasicDailyToCSV(
 	ctx context.Context,
 	db database.DataRepository,
 	csvPath string,
+	opts BasicExportOptions,
 ) (int, error) {
 
 	gbbqData, err := db.GetGbbq()
@@ -42,9 +52,12 @@ func ExportBasicDailyToCSV(
 	}
 	gbbqIndex := buildGbbqIndex(gbbqData)
 
-	symbols, err := db.GetSymbolsByClass(model.ClassStock, model.ClassETF)
-	if err != nil {
-		return 0, fmt.Errorf("failed to query symbols: %w", err)
+	symbols := opts.Symbols
+	if symbols == nil {
+		symbols, err = db.GetSymbolsByClass(model.ClassStock, model.ClassETF, model.ClassBStock)
+		if err != nil {
+			return 0, fmt.Errorf("failed to query symbols: %w", err)
+		}
 	}
 
 	cw, err := utils.NewCSVWriter[model.BasicDaily](csvPath)
@@ -56,6 +69,20 @@ func ExportBasicDailyToCSV(
 	basicCtx := &BasicContext{
 		DB:        db,
 		GbbqIndex: gbbqIndex,
+	}
+	if !opts.FullRecalc {
+		basicCtx.LatestBasics, err = db.GetLatestBasics(model.ClassStock, model.ClassETF, model.ClassBStock)
+		if err != nil {
+			return 0, fmt.Errorf("failed to query latest basics: %w", err)
+		}
+		basicCtx.IncrementalKline, err = db.GetKlineDailyAfterLatestBasic(model.ClassStock, model.ClassETF, model.ClassBStock)
+		if err != nil {
+			return 0, fmt.Errorf("failed to query incremental kline: %w", err)
+		}
+	}
+	rebuildSet := make(map[string]struct{}, len(opts.RebuildSymbols))
+	for _, symbol := range opts.RebuildSymbols {
+		rebuildSet[symbol] = struct{}{}
 	}
 
 	pipeline := utils.NewPipeline[string, model.BasicDaily]()
@@ -69,7 +96,8 @@ func ExportBasicDailyToCSV(
 				return nil, ctx.Err()
 			default:
 			}
-			return processBasicDaily(basicCtx, symbol)
+			_, rebuild := rebuildSet[symbol]
+			return processBasicDaily(basicCtx, symbol, opts.FullRecalc || rebuild)
 		},
 		func(rows []model.BasicDaily) error {
 			return cw.Write(rows)
@@ -87,7 +115,31 @@ func ExportBasicDailyToCSV(
 	return int(result.OutputRows), nil
 }
 
-func processBasicDaily(bc *BasicContext, symbol string) ([]model.BasicDaily, error) {
+func processBasicDaily(bc *BasicContext, symbol string, fullRecalc bool) ([]model.BasicDaily, error) {
+	if !fullRecalc {
+		lastBasic, ok := bc.LatestBasics[symbol]
+		if !ok {
+			fullRecalc = true
+		} else {
+			stockData := bc.IncrementalKline[symbol]
+			if len(stockData) == 0 {
+				return nil, nil
+			}
+
+			gbbqs := getGbbqBySymbol(bc.GbbqIndex, symbol)
+			basics, err := calculateBasicDailyIncremental(lastBasic, stockData, gbbqs)
+			if err != nil {
+				return nil, fmt.Errorf("calc incremental %s failed: %w", symbol, err)
+			}
+
+			result := make([]model.BasicDaily, len(basics))
+			for i, b := range basics {
+				result[i] = *b
+			}
+			return result, nil
+		}
+	}
+
 	stockData, err := bc.DB.QueryKlineDaily(symbol, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("query stock %s failed: %w", symbol, err)
@@ -112,6 +164,36 @@ func processBasicDaily(bc *BasicContext, symbol string) ([]model.BasicDaily, err
 	return result, nil
 }
 
+func calculateBasicDailyIncremental(
+	last model.BasicDaily,
+	stockData []model.KlineDay,
+	gbbqData []model.GbbqData,
+) ([]*model.BasicDaily, error) {
+	if len(stockData) == 0 {
+		return nil, nil
+	}
+
+	// 把最后一条 basic 作为仅用于承接前收盘和股本状态的种子行，计算后丢弃。
+	seed := model.KlineDay{
+		Symbol: last.Symbol,
+		Date:   last.Date,
+		Open:   last.Close,
+		High:   last.Close,
+		Low:    last.Close,
+		Close:  last.Close,
+	}
+	rows := make([]model.KlineDay, 0, len(stockData)+1)
+	rows = append(rows, seed)
+	rows = append(rows, stockData...)
+
+	basics, err := CalculateBasicDaily(rows, gbbqData)
+	if err != nil {
+		return nil, err
+	}
+	return basics[1:], nil
+}
+
+// CalculateBasicDaily 计算 stock/etf/bstock 的 PreClose、涨跌幅、振幅、换手率和市值。
 func CalculateBasicDaily(
 	stockData []model.KlineDay,
 	gbbqData []model.GbbqData,
@@ -301,13 +383,16 @@ func calculatePreClosePrice(prevClose float64, info *xdxrInfo) float64 {
 		return prevClose
 	}
 	denominator := 10 + info.Peigu + info.Songzhuangu
-	if denominator == 0 {
+	if denominator <= 0 {
 		return prevClose
 	}
 	numerator := (prevClose*10 - info.Fenhong) + (info.Peigu * info.Peigujia)
 	price := numerator / denominator
 	if info.Splitc3 > 0 {
 		price /= info.Splitc3
+	}
+	if !isPositiveFinite(price) {
+		return prevClose
 	}
 	return price
 }

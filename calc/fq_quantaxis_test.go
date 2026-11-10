@@ -1,7 +1,10 @@
 package calc
 
 import (
+	"context"
 	"math"
+	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -61,5 +64,112 @@ func TestNoXdxrFactorUnchanged(t *testing.T) {
 		if f.HfqFactor != 1.0 {
 			t.Errorf("day %d: expected hfq=1.0, got %f", i, f.HfqFactor)
 		}
+	}
+}
+
+func TestIncrementalHfqContinuesFromLastFactor(t *testing.T) {
+	basics := []model.BasicDaily{
+		{Symbol: "sz000001", Date: date(2026, 1, 2), Close: 10, PreClose: 10},
+		{Symbol: "sz000001", Date: date(2026, 1, 5), Close: 11, PreClose: 10},
+		{Symbol: "sz000001", Date: date(2026, 1, 6), Close: 5, PreClose: 5.5},
+	}
+	last := model.Factor{
+		Symbol:    "sz000001",
+		Date:      date(2026, 1, 5),
+		HfqFactor: 2,
+	}
+
+	factors, ok := calculateIncrementalHfq(basics, last)
+	if !ok {
+		t.Fatal("calculateIncrementalHfq() unexpectedly requested full recalculation")
+	}
+	if len(factors) != 1 {
+		t.Fatalf("len(factors) = %d, want 1", len(factors))
+	}
+	want := 2 * 11 / 5.5
+	if math.Abs(factors[0].HfqFactor-want) > 1e-9 {
+		t.Fatalf("hfq = %v, want %v", factors[0].HfqFactor, want)
+	}
+}
+
+func TestIncrementalHfqRequiresKnownLastDate(t *testing.T) {
+	basics := []model.BasicDaily{
+		{Symbol: "sz000001", Date: date(2026, 1, 5), Close: 11, PreClose: 10},
+	}
+	last := model.Factor{
+		Symbol:    "sz000001",
+		Date:      date(2026, 1, 2),
+		HfqFactor: 2,
+	}
+
+	if _, ok := calculateIncrementalHfq(basics, last); ok {
+		t.Fatal("calculateIncrementalHfq() should request full recalculation")
+	}
+}
+
+func TestFullHfqIgnoresInvalidPreClose(t *testing.T) {
+	basics := []model.BasicDaily{
+		{Symbol: "sz000001", Date: date(2026, 1, 2), Close: 10, PreClose: 10},
+		{Symbol: "sz000001", Date: date(2026, 1, 5), Close: 10, PreClose: -1},
+	}
+
+	factors := calculateFullHfq(basics)
+	if factors[1].HfqFactor != 1 {
+		t.Fatalf("hfq = %v, want 1", factors[1].HfqFactor)
+	}
+}
+
+func TestExportFactorsSelectiveRebuild(t *testing.T) {
+	day1 := date(2026, 1, 2)
+	day2 := date(2026, 1, 5)
+	repo := &fakeCalcRepo{
+		symbols: []string{"sh600000", "sz000001"},
+		basics: map[string][]model.BasicDaily{
+			"sh600000": {
+				{Symbol: "sh600000", Date: day1, Close: 10, PreClose: 10},
+				{Symbol: "sh600000", Date: day2, Close: 11, PreClose: 10},
+			},
+			"sz000001": {
+				{Symbol: "sz000001", Date: day1, Close: 20, PreClose: 20},
+				{Symbol: "sz000001", Date: day2, Close: 21, PreClose: 20},
+			},
+		},
+		latestFactors: map[string]*model.Factor{
+			"sz000001": {Symbol: "sz000001", Date: day1, HfqFactor: 1},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "factor.csv")
+
+	count, err := ExportFactorsToCSV(context.Background(), repo, path, FactorExportOptions{
+		RebuildSymbols: []string{"sh600000"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		t.Fatalf("count = %d, want 3", count)
+	}
+
+	rows := readCSVFile(t, path)
+	counts := map[string]int{}
+	for _, row := range rows[1:] {
+		counts[row[0]]++
+	}
+	if counts["sh600000"] != 2 {
+		t.Fatalf("sh600000 rows = %d, want full rebuild 2", counts["sh600000"])
+	}
+	if counts["sz000001"] != 1 {
+		t.Fatalf("sz000001 rows = %d, want incremental 1", counts["sz000001"])
+	}
+	if !reflect.DeepEqual(repo.fullBasicCalls, []string{"sh600000"}) {
+		t.Fatalf("full basic calls = %v, want [sh600000]", repo.fullBasicCalls)
+	}
+	if repo.latestFactorBatches != 1 || repo.incrementalBasicsBatch != 1 {
+		t.Fatalf("batch calls = latest factors %d, incremental basics %d; want 1, 1",
+			repo.latestFactorBatches, repo.incrementalBasicsBatch)
+	}
+	wantClasses := []string{model.ClassStock, model.ClassETF, model.ClassBStock}
+	if len(repo.classCalls) != 1 || !reflect.DeepEqual(repo.classCalls[0], wantClasses) {
+		t.Fatalf("class calls = %v, want %v", repo.classCalls, wantClasses)
 	}
 }

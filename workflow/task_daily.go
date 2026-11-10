@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/jing2uo/tdx2db/database"
@@ -84,7 +85,20 @@ func executeDailyImport(ctx context.Context, db database.DataRepository, args *T
 
 	stockDailyCSV := filepath.Join(args.TempDir, "stock.csv")
 
-	_, err := tdx.ConvertFilesToCSV(ctx, sourceDir, stockDailyCSV, ".day")
+	var err error
+	if args.Plan != nil {
+		latestDates, getErr := db.GetLatestDates(model.TableKlineDaily.TableName, "date")
+		if getErr != nil {
+			return nil, fmt.Errorf("failed to get latest dates from database: %w", getErr)
+		}
+		if len(latestDates) == 0 {
+			_, err = tdx.ConvertFilesToCSV(ctx, sourceDir, stockDailyCSV, ".day")
+		} else {
+			_, err = tdx.ConvertDayFilesToCSVAfter(ctx, sourceDir, stockDailyCSV, latestDates)
+		}
+	} else {
+		_, err = tdx.ConvertFilesToCSV(ctx, sourceDir, stockDailyCSV, ".day")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert day files to csv: %w", err)
 	}
@@ -93,6 +107,15 @@ func executeDailyImport(ctx context.Context, db database.DataRepository, args *T
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
+	}
+
+	info, err := os.Stat(stockDailyCSV)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to stat daily csv: %w", err)
+	}
+	if os.IsNotExist(err) || info.Size() == 0 {
+		fmt.Println("🌲 日线数据无需更新")
+		return &TaskResult{State: StateSkipped, Message: "no new daily data"}, nil
 	}
 
 	if err := db.ImportKlineDaily(stockDailyCSV); err != nil {

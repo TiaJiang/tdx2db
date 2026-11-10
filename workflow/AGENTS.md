@@ -82,7 +82,7 @@ TaskCalcBasic = &Task{
 - `Plan *WorkPlan` - cron 由 `BuildWorkPlan` 注入；init 留空，`skipIfPlan` 自动放行所有任务
 
 **WorkPlan / TradingCalendar：**
-- `BuildWorkPlan(db, today)`：先读 `raw_holidays`，空表（首次/旧库）→ 强制全流程跑；否则用 `TradingCalendar.LastTradingDayOnOrBefore(today)` 与各表最新日期比较，标记 `NeedDaily/NeedGbbq/NeedBasic/NeedFactor/NeedHolidays`
+- `BuildWorkPlan(db, today)`：先读 `raw_holidays`，空表（首次/旧库）→ 强制全流程跑；否则用 `TradingCalendar.LastTradingDayOnOrBefore(today)` 判断日线更新，并按 stock/etf/bstock 各标的最新 kline/basic/factor 日期标记 `NeedBasic/NeedFactor`
 - `plan.AnyNeeded() == false` → cron 直接退出
 - `Calendar` 还会回流到 `prepareTdxData`，下载日线 404 时区分"节假日跳过 🎉"/"周末 🌴"/"未发布 ⏳"
 
@@ -112,7 +112,7 @@ TaskCalcBasic = &Task{
 - Minute chain: `prepare_tic → update_1min` (only when `--min`)
 - Init mode: `init_daily` (only import daily data from user-provided directory)
 
-**calc_basic and calc_factor run in full recalculation mode** — they truncate the target table and reimport all rows. This is intentional because preclose/factor depend on the entire history chain.
+**calc_basic is incremental by default** — it appends after each symbol's latest basic date using that row as the prior-close/share-state seed. GBBQ changes rebuild only the affected symbols; a full table rebuild is reserved for changes without a usable symbol list. **calc_factor is incremental by default**: it appends factors after each symbol's latest factor date, and only rebuilds affected symbols when their GBBQ changed or invalid factors were detected.
 
 **Error modes:**
 - `ErrorModeStop` - Stop execution on error (default)

@@ -7,6 +7,7 @@ const (
 	ClassBStock  = "bstock"
 	ClassIndex   = "index"
 	ClassETF     = "etf"
+	ClassCBond   = "cbond"
 	ClassBlock   = "block"
 	ClassUnknown = "unknown"
 )
@@ -46,6 +47,12 @@ var classRules = []struct {
 	{"sz", "15", ClassETF}, {"sz", "16", ClassETF},
 	{"sz", "18", ClassETF},
 
+	// 可转债
+	{"sh", "110", ClassCBond}, {"sh", "111", ClassCBond},
+	{"sh", "113", ClassCBond}, {"sh", "118", ClassCBond},
+	{"sz", "123", ClassCBond}, {"sz", "127", ClassCBond},
+	{"sz", "128", ClassCBond},
+
 	// 北交所股票
 	{"bj", "43", ClassStock}, {"bj", "83", ClassStock},
 	{"bj", "87", ClassStock}, {"bj", "88", ClassStock},
@@ -82,14 +89,18 @@ func ClassifyCode(symbol string) string {
 
 // PriceScale 返回 TDX 日线/分钟线原始整数价格的换算系数。
 // TDX 把不同品种用不同分辨率存储:
-//   - 股票/指数/板块/北交所/可转债: 单位 0.01 元 (分),  返回 100
+//   - 股票/指数/板块/北交所: 单位 0.01 元 (分),  返回 100
 //   - ETF/LOF/老封基 (class=etf): 单位 0.001 元,       返回 1000
 //   - 沪市 B 股 (sh900) / 深市 B 股 (sz20): 单位 0.001 元 (USD/HKD), 返回 1000
+//   - 可转债: 单位 0.0001 元, 返回 10000
 //
 // 未识别的 symbol 默认按股票 (100) 处理。
 func PriceScale(symbol string) float64 {
-	if ClassifyCode(symbol) == ClassETF {
+	switch ClassifyCode(symbol) {
+	case ClassETF:
 		return 1000.0
+	case ClassCBond:
+		return 10000.0
 	}
 	if strings.HasPrefix(symbol, "sh900") || strings.HasPrefix(symbol, "sz20") {
 		return 1000.0

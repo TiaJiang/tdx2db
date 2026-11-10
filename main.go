@@ -98,9 +98,11 @@ func main() {
 	}
 
 	var (
-		dbURI      string
-		dayFileDir string
-		minEnable  bool
+		dbURI          string
+		dayFileDir     string
+		minEnable      bool
+		validateFormat string
+		validateStrict bool
 	)
 
 	var initCmd = &cobra.Command{
@@ -123,6 +125,17 @@ func main() {
 		},
 	}
 
+	var validateCmd = &cobra.Command{
+		Use:          "validate",
+		Short:        "Validate database integrity and calculation coverage",
+		SilenceUsage: true,
+		Example: `  tdx2db validate --dburi 'duckdb://./tdx.db'
+  tdx2db validate --dburi 'duckdb://./tdx.db' --format json --strict` + dbURIHelp,
+		RunE: func(c *cobra.Command, args []string) error {
+			return cmd.Validate(ctx, dbURI, validateFormat, validateStrict)
+		},
+	}
+
 	// Init Flags
 	initCmd.Flags().StringVar(&dbURI, "dburi", "", dbURIInfo)
 	initCmd.Flags().StringVar(&dayFileDir, "dayfiledir", "", dayFileInfo)
@@ -134,8 +147,15 @@ func main() {
 	cronCmd.MarkFlagRequired("dburi")
 	cronCmd.Flags().BoolVar(&minEnable, "min", false, minInfo)
 
+	// Validate Flags
+	validateCmd.Flags().StringVar(&dbURI, "dburi", "", dbURIInfo)
+	validateCmd.MarkFlagRequired("dburi")
+	validateCmd.Flags().StringVar(&validateFormat, "format", "table", "输出格式: table|json")
+	validateCmd.Flags().BoolVar(&validateStrict, "strict", false, "warning 也返回失败")
+
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(cronCmd)
+	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	cobra.OnFinalize(func() {

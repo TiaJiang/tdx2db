@@ -26,7 +26,7 @@
 | KlineDay | raw_kline_daily | Raw OHLCV + date |
 | KlineMin | raw_kline_1min | Minute OHLCV + datetime |
 | SymbolClass | raw_symbol_class | Symbol → class mapping (stock/index/etf/block/unknown) |
-| BasicDaily | raw_basic_daily | Calculated: preclose, change_pct, amplitude, turnover, floatmv, totalmv (覆盖 stock + ETF) |
+| BasicDaily | raw_basic_daily | Calculated: preclose, change_pct, amplitude, turnover, floatmv, totalmv (覆盖 stock + ETF + B 股) |
 | Factor | raw_adjust_factor | HFQ factor per symbol per date |
 | GbbqData | raw_gbbq | 股本变迁: category + C1-C4 (cat=1 除权 / 11 ETF 折算 / 2-10 股本变动) |
 | Meta | _meta | Key-value metadata (schema version, etc.) |
@@ -52,12 +52,12 @@
 **View registration (views.go):**
 - `DefineView()` registers view ID into global `viewRegistry`
 - View SQL is driver-specific (implemented in database/*/ddl.go)
-- 6 视图：v_{stock,etf}_{bfq,qfq,hfq} —— 各自 INNER JOIN `raw_symbol_class` 过滤单一 class，stock 价 ROUND 2 位 / etf 3 位
+- 7 视图：v_{stock,etf,bstock}_{qfq,hfq} 6 个复权视图 + `v_index` —— stock/etf/bstock 各自 INNER JOIN `raw_symbol_class` 过滤单一 class，stock 价 ROUND 2 位 / etf、bstock 3 位；ETF 视图不含 turnover/floatmv/totalmv；`v_index` 只读 `raw_kline_daily`，价格 ROUND 2 位，不引用 basic/factor。旧 BFQ 视图名由 `DeprecatedViewNames()` 集中维护
 
 **Classification helpers (classify.go):**
 - `ClassifyCode(symbol)` → stock/index/etf/block/unknown，按 (market, prefix) 最长前缀匹配
-- `PriceScale(symbol)` → 100 (股票/指数/板块) 或 1000 (ETF/LOF/B股) 用于解析 TDX 原始整数价格
-- `SymbolFromCode(code)` → 6 位裸数字反查 "shXXXXXX"/"szXXXXXX"，仅考虑 stock/etf 避免 "000" 歧义
+- `PriceScale(symbol)` → 100 (股票/指数/板块)、1000 (ETF/LOF/B股) 或 10000 (可转债) 用于解析 TDX 原始整数价格
+- `SymbolFromCode(code)` → 6 位裸数字反查 "shXXXXXX"/"szXXXXXX"，仅考虑 stock/etf/bstock 避免 "000" 歧义
 
 ## ANTI-PATTERNS
 

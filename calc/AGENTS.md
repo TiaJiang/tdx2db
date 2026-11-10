@@ -1,6 +1,6 @@
 # FINANCIAL CALCULATIONS
 
-**Purpose:** Calculate basic indicators (preclose, turnover, market value) and 后复权因子 (HFQ factor)，覆盖 stock + ETF/LOF/B股
+**Purpose:** Calculate basic indicators (preclose, turnover, market value) and 后复权因子 (HFQ factor)，覆盖 stock + ETF/LOF + B股
 
 ## STRUCTURE
 ```
@@ -31,7 +31,7 @@ DB: raw_kline_daily + raw_gbbq
         │
         └──► calc/basic.go (CalculateBasicDaily)
                  │
-                 └──► raw_basic_daily (preclose, turnover, floatmv, totalmv) [stock + etf]
+                 └──► raw_basic_daily (preclose, turnover, floatmv, totalmv) [stock + etf + bstock]
                         │
                         └──► calc/fq_quantaxis.go (calculateFullHfq)
                                 │
@@ -39,7 +39,7 @@ DB: raw_kline_daily + raw_gbbq
 ```
 
 Task dependency: `calc_basic` runs before `calc_factor` (factor 直接读 basic.PreClose)。
-Symbol filter: `GetSymbolsByClass(stock, etf)` —— index/block 不参与计算。
+Symbol filter: `GetSymbolsByClass(stock, etf, bstock)` —— index/block 不参与计算。
 
 ## KEY ALGORITHMS
 
@@ -79,15 +79,15 @@ If the first gbbq share record date > IPO date, uses its C1/C2 (pre-change value
 - 忘记 cat=11 处理 —— ETF 拆分日不除以 Splitc3 会让当天涨跌幅看起来像异常暴跌
 
 **NEVER:**
-- Change factor calculation to incremental — full recalc is intentional (factor depends on entire history)
+- Treat an unknown/invalid last factor as safe to continue — request a full recalculation for that symbol
 - Remove the `floatEqual` tolerance check — floating point ratios need it
 
 ## NOTES
 
-**Both calc modules run in full recalculation mode** (truncate table + reimport all). This is intentional — preclose/factor depend on the entire history chain.
+**`calc_basic` is incremental by default**: the latest stored basic row is used as a seed for prior close and share state, then only newer K-lines are calculated. GBBQ changes rebuild affected symbols in full; a full table rebuild is only used when the affected symbol list is unavailable. **`calc_factor`** reads basics from each symbol's last valid factor date and appends new dates; affected-symbol GBBQ changes or invalid factors trigger a per-symbol rebuild.
 
 **Pipeline concurrency:** Both exports use `utils.Pipeline` to process symbols concurrently. Each symbol is independent.
 
 **Units:** gbbq share values are in 万股 (×10000 = actual shares). Turnover = volume / (float_shares × 10000).
 
-**ETF 一般无 cat 2/3/5/7/8/9/10 记录**，因此 turnover/floatmv/totalmv 通常为 0；这是预期行为。
+**ETF 一般无 cat 2/3/5/7/8/9/10 记录**，因此 turnover/floatmv/totalmv 通常为 0；这是预期行为。B 股无股本记录时也沿用 0 值行为。

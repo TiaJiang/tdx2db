@@ -15,6 +15,7 @@ func TestIsOnlineSymbolNameClassKeepsBShare(t *testing.T) {
 		{name: "stock", class: model.ClassStock, want: true},
 		{name: "bstock", class: model.ClassBStock, want: true},
 		{name: "etf", class: model.ClassETF, want: true},
+		{name: "cbond", class: model.ClassCBond, want: true},
 		{name: "index", class: model.ClassIndex, want: true},
 		{name: "block", class: model.ClassBlock, want: false},
 		{name: "unknown", class: model.ClassUnknown, want: false},

@@ -5,7 +5,7 @@ import "time"
 // SchemaMajor 表示数据库 schema 的主版本号。
 // 当发生破坏性变更（表重命名、字段语义变化等）时递增。
 // 已安装的数据库 major 版本与当前代码不匹配时，工具将拒绝操作并提示用户查看文档。
-const SchemaMajor = 6
+const SchemaMajor = 7
 
 // SchemaMinor 表示数据库 schema 的次版本号。
 // 当发生非破坏性变更（新增表、新增字段等）时递增。
@@ -47,7 +47,7 @@ type Factor struct {
 }
 
 // BasicDaily 是每日衍生指标(PreClose/涨跌幅/振幅/换手率/市值)。
-// 覆盖 stock + etf 两类 symbol。
+// 覆盖 stock + etf + bstock 三类 symbol。
 type BasicDaily struct {
 	Date          time.Time `col:"date" type:"date"`
 	Symbol        string    `col:"symbol"`

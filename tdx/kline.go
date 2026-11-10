@@ -30,6 +30,19 @@ func ConvertFilesToCSV(ctx context.Context, inputDir string, outputFile string, 
 	}
 }
 
+// ConvertDayFilesToCSVAfter 按标的最新日期只转换新增日线记录。
+func ConvertDayFilesToCSVAfter(
+	ctx context.Context,
+	inputDir string,
+	outputFile string,
+	latest map[string]time.Time,
+) (string, error) {
+	parser := func(data []byte, symbol string) ([]model.KlineDay, error) {
+		return processDayFileAfter(data, symbol, latest[symbol])
+	}
+	return runConversion[model.KlineDay](ctx, inputDir, outputFile, ".day", parser)
+}
+
 func runConversion[T any](
 	ctx context.Context,
 	inputDir string,
@@ -104,6 +117,10 @@ func readFileAndParse[T any](
 }
 
 func processDayFile(data []byte, symbol string) ([]model.KlineDay, error) {
+	return processDayFileAfter(data, symbol, time.Time{})
+}
+
+func processDayFileAfter(data []byte, symbol string, after time.Time) ([]model.KlineDay, error) {
 	n := len(data)
 	if n%recordSize != 0 {
 		return nil, fmt.Errorf("invalid file size: %d", n)
@@ -138,6 +155,9 @@ func processDayFile(data []byte, symbol string) ([]model.KlineDay, error) {
 
 		t, err := parseDate(dateRaw)
 		if err != nil {
+			continue
+		}
+		if !after.IsZero() && !t.After(after) {
 			continue
 		}
 

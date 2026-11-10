@@ -13,6 +13,10 @@ import (
 )
 
 func (d *ClickHouseDriver) ImportCSV(meta *model.TableMeta, filePath string) error {
+	return d.importCSVToTable(meta.TableName, filePath)
+}
+
+func (d *ClickHouseDriver) importCSVToTable(tableName, filePath string) error {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -33,7 +37,7 @@ func (d *ClickHouseDriver) ImportCSV(meta *model.TableMeta, filePath string) err
 		q.Set("database", d.database)
 	}
 
-	q.Add("query", fmt.Sprintf("INSERT INTO %s FORMAT CSVWithNames", meta.TableName))
+	q.Add("query", fmt.Sprintf("INSERT INTO %s FORMAT CSVWithNames", tableName))
 	q.Add("date_time_input_format", "best_effort")
 	q.Add("session_timezone", "Asia/Shanghai")
 
@@ -81,16 +85,116 @@ func (d *ClickHouseDriver) ImportKline1Min(path string) error {
 }
 
 func (d *ClickHouseDriver) ImportGBBQ(path string) error {
-	d.TruncateTable(model.TableGbbq)
+	if err := d.TruncateTable(model.TableGbbq); err != nil {
+		return err
+	}
 	return d.ImportCSV(model.TableGbbq, path)
 }
 
-func (d *ClickHouseDriver) ImportBasic(path string) error {
-	return d.ImportCSV(model.TableBasicDaily, path)
+func (d *ClickHouseDriver) ImportBasic(path string, rebuildSymbols []string) error {
+	const staging = "incoming_basic_daily"
+	if err := d.createStagingTable(staging, model.TableBasicDaily.TableName); err != nil {
+		return err
+	}
+	defer d.dropStagingTable(staging)
+
+	if err := d.importCSVToTable(staging, path); err != nil {
+		return fmt.Errorf("failed to import basic staging table: %w", err)
+	}
+
+	if len(rebuildSymbols) > 0 {
+		quoted := make([]string, len(rebuildSymbols))
+		for i, symbol := range rebuildSymbols {
+			quoted[i] = quoteClickHouseString(symbol)
+		}
+		if err := d.execClickHouseMutation(fmt.Sprintf(
+			"ALTER TABLE %s DELETE WHERE symbol IN (%s)",
+			model.TableBasicDaily.TableName, strings.Join(quoted, ", "),
+		)); err != nil {
+			return fmt.Errorf("failed to replace rebuilt basic symbols: %w", err)
+		}
+	}
+
+	if err := d.execClickHouseMutation(fmt.Sprintf(
+		"ALTER TABLE %s DELETE WHERE (symbol, date) IN (SELECT symbol, date FROM %s)",
+		model.TableBasicDaily.TableName, staging,
+	)); err != nil {
+		return fmt.Errorf("failed to replace existing basic rows: %w", err)
+	}
+	if _, err := d.db.Exec(fmt.Sprintf(
+		"INSERT INTO %s SELECT DISTINCT * FROM %s",
+		model.TableBasicDaily.TableName, staging,
+	)); err != nil {
+		return fmt.Errorf("failed to insert basic rows: %w", err)
+	}
+	return nil
 }
 
-func (d *ClickHouseDriver) ImportAdjustFactors(path string) error {
-	return d.ImportCSV(model.TableAdjustFactor, path)
+func (d *ClickHouseDriver) ImportAdjustFactors(path string, rebuildSymbols []string) error {
+	const staging = "incoming_adjust_factor"
+	if err := d.createStagingTable(staging, model.TableAdjustFactor.TableName); err != nil {
+		return err
+	}
+	defer d.dropStagingTable(staging)
+
+	if err := d.importCSVToTable(staging, path); err != nil {
+		return fmt.Errorf("failed to import factor staging table: %w", err)
+	}
+
+	if len(rebuildSymbols) > 0 {
+		quoted := make([]string, len(rebuildSymbols))
+		for i, symbol := range rebuildSymbols {
+			quoted[i] = quoteClickHouseString(symbol)
+		}
+		if err := d.execClickHouseMutation(fmt.Sprintf(
+			"ALTER TABLE %s DELETE WHERE symbol IN (%s)",
+			model.TableAdjustFactor.TableName, strings.Join(quoted, ", "),
+		)); err != nil {
+			return fmt.Errorf("failed to replace rebuilt factor symbols: %w", err)
+		}
+	}
+
+	if err := d.execClickHouseMutation(fmt.Sprintf(
+		"ALTER TABLE %s DELETE WHERE (symbol, date) IN (SELECT symbol, date FROM %s)",
+		model.TableAdjustFactor.TableName, staging,
+	)); err != nil {
+		return fmt.Errorf("failed to replace existing factor rows: %w", err)
+	}
+	if _, err := d.db.Exec(fmt.Sprintf(
+		"INSERT INTO %s SELECT DISTINCT * FROM %s",
+		model.TableAdjustFactor.TableName, staging,
+	)); err != nil {
+		return fmt.Errorf("failed to insert factor rows: %w", err)
+	}
+	return nil
+}
+
+func (d *ClickHouseDriver) createStagingTable(staging, target string) error {
+	if _, err := d.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", staging)); err != nil {
+		return fmt.Errorf("failed to clear staging table %s: %w", staging, err)
+	}
+	if _, err := d.db.Exec(fmt.Sprintf("CREATE TABLE %s AS %s", staging, target)); err != nil {
+		return fmt.Errorf("failed to create staging table %s: %w", staging, err)
+	}
+	return nil
+}
+
+func (d *ClickHouseDriver) dropStagingTable(staging string) {
+	_, _ = d.db.Exec(fmt.Sprintf("DROP TABLE IF EXISTS %s", staging))
+}
+
+func (d *ClickHouseDriver) execClickHouseMutation(query string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	if _, err := d.db.ExecContext(ctx, query+" SETTINGS mutations_sync = 1"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func quoteClickHouseString(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 func (d *ClickHouseDriver) ImportHolidays(path string) error {

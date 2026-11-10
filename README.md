@@ -4,7 +4,7 @@
 
 # tdx2db - 获得专属的 A 股行情数据库
 
-[![GitHub release](https://img.shields.io/github/v/release/jing2uo/tdx2db?style=flat-square)](https://github.com/jing2uo/tdx2db/releases)
+[![GitHub release](https://img.shields.io/github/v/release/TiaJiang/tdx2db?style=flat-square)](https://github.com/TiaJiang/tdx2db/releases)
 [![License](https://img.shields.io/github/license/jing2uo/tdx2db?style=flat-square)](LICENSE)
 
 将通达信行情数据导入本地数据库，支持 DuckDB 和 ClickHouse。
@@ -40,7 +40,7 @@ tdx2db 永远免费开源，日线 + 分时 + 复权 + 板块足够跑基本的�
 
 ### 二进制
 
-从 [releases](https://github.com/jing2uo/tdx2db/releases) 下载对应平台压缩包，解压后：
+从 [releases](https://github.com/TiaJiang/tdx2db/releases) 下载对应平台压缩包，解压后：
 
 ```bash
 sudo mv tdx2db /usr/local/bin/ && tdx2db -h

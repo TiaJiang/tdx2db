@@ -22,14 +22,6 @@ jobs:
             ext: ""
             archive: tar.gz
             prepare: true
-          - os: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
-            os_title: Linux
-            arch_title: arm64
-            ext: ""
-            archive: tar.gz
-            prepare: true
           - os: macos-15
             goos: darwin
             goarch: arm64
@@ -98,8 +90,84 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-on-rocky:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    container:
+      image: rockylinux:9
+      options: --user root
+    env:
+      CGO_ENABLED: "1"
+      CC: gcc
+      CXX: g++
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Bootstrap Rocky
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make git ca-certificates tar gzip curl-minimal bsdtar
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Prepare datatool
+        run: |
+          mkdir -p .tmp/extracted tdx/embed
+          curl -fsSL \
+            https://www.tdx.com.cn/products/autoup/cyb/datatool.rar \
+            -o .tmp/datatool.rar
+          bsdtar -xf .tmp/datatool.rar -C .tmp/extracted
+          install -m 0755 .tmp/extracted/v4/datatool tdx/embed/datatool
+
+      - name: Verify toolchain
+        run: |
+          go version
+          gcc --version | head -1
+          ldd --version | head -1
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test -count=1 ./...
+
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build \
+            -trimpath \
+            -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.date=${DATE}" \
+            -o tdx2db .
+          ./tdx2db version
+          ldd ./tdx2db
+
+      - name: Archive (tar.gz)
+        run: |
+          tar -czf tdx2db_Linux_arm64.tar.gz tdx2db
+
+      - name: Upload archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-arm64
+          path: tdx2db_Linux_arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
   release:
-    needs: build
+    needs:
+      - build
+      - build-on-rocky
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

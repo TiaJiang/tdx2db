@@ -148,3 +148,11 @@ func TestEmbeddedBlockBridgeHasNoMacCalls(t *testing.T) {
 		}
 	}
 }
+
+func TestEmbeddedBlockBridgeIsSerial(t *testing.T) {
+	for _, forbidden := range []string{"ThreadPoolExecutor", "F10_WORKERS"} {
+		if strings.Contains(eltdxOnlineScript, forbidden) {
+			t.Fatalf("embedded block bridge contains concurrent execution reference %q", forbidden)
+		}
+	}
+}

@@ -3,7 +3,6 @@
 import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 try:
     from eltdx import F10Client, TdxClient
@@ -22,7 +21,6 @@ TDX_TIMEOUT = 10
 TDX_HOST_ATTEMPTS = 8
 F10_TIMEOUT = 10
 F10_ATTEMPTS = 3
-F10_WORKERS = 8
 
 
 def market_symbol(market, code):
@@ -176,27 +174,21 @@ def fetch_blocks(tasks_path):
 
     theme_tasks = list(tasks.get("themes") or [])
     index_tasks = list(tasks.get("indices") or [])
-    max_workers = min(F10_WORKERS, max(1, len(theme_tasks) + len(index_tasks)))
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for task_members, task_warnings, task_failed in executor.map(
-            lambda task: fetch_theme_task(client, task),
-            theme_tasks,
-        ):
-            warnings.extend(task_warnings)
-            failed_blocks.update(task_failed)
-            for member in task_members:
-                members[(member["stock_symbol"], member["block_code"])] = member
+    for task in theme_tasks:
+        task_members, task_warnings, task_failed = fetch_theme_task(client, task)
+        warnings.extend(task_warnings)
+        failed_blocks.update(task_failed)
+        for member in task_members:
+            members[(member["stock_symbol"], member["block_code"])] = member
 
-        for info, task_members, task_warnings, task_failed in executor.map(
-            lambda task: fetch_index_task(client, task),
-            index_tasks,
-        ):
-            warnings.extend(task_warnings)
-            failed_blocks.update(task_failed)
-            if info:
-                infos[info["block_code"]] = info
-            for member in task_members:
-                members[(member["stock_symbol"], member["block_code"])] = member
+    for task in index_tasks:
+        info, task_members, task_warnings, task_failed = fetch_index_task(client, task)
+        warnings.extend(task_warnings)
+        failed_blocks.update(task_failed)
+        if info:
+            infos[info["block_code"]] = info
+        for member in task_members:
+            members[(member["stock_symbol"], member["block_code"])] = member
 
     return {
         "blocks": sorted(infos.values(), key=lambda item: item["block_code"]),

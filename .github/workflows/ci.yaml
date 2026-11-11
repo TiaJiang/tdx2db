@@ -115,8 +115,14 @@ jobs:
       - name: Build
         run: |
           go build -trimpath -ldflags="-s -w" -o tdx2db .
+
+      - name: Smoke test
+        run: |
           ./tdx2db version
-          ldd ./tdx2db
+
+      - name: Inspect linkage
+        run: |
+          ldd ./tdx2db || true
 
       - name: Upload snapshot
         uses: actions/upload-artifact@v4

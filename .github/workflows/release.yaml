@@ -149,8 +149,14 @@ jobs:
             -trimpath \
             -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.date=${DATE}" \
             -o tdx2db .
+
+      - name: Smoke test
+        run: |
           ./tdx2db version
-          ldd ./tdx2db
+
+      - name: Inspect linkage
+        run: |
+          ldd ./tdx2db || true
 
       - name: Archive (tar.gz)
         run: |

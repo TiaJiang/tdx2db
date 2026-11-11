@@ -114,15 +114,7 @@ jobs:
 
       - name: Build
         run: |
-          set +e
-          output=$(go build -trimpath -ldflags="-s -w" -o tdx2db . 2>&1)
-          status=$?
-          if [ "$status" -ne 0 ]; then
-            printf '%s\n' "$output"
-            message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-6000)
-            printf '::error title=go build failed::%s\n' "$message"
-            exit "$status"
-          fi
+          go build -buildvcs=false -trimpath -ldflags="-s -w" -o tdx2db .
 
       - name: Smoke test
         run: |

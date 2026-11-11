@@ -88,6 +88,6 @@ If the first gbbq share record date > IPO date, uses its C1/C2 (pre-change value
 
 **Pipeline concurrency:** Both exports use `utils.Pipeline` to process symbols concurrently. Each symbol is independent.
 
-**Units:** gbbq share values are in 万股 (×10000 = actual shares). Turnover = volume / (float_shares × 10000).
+**Units:** gbbq share values are in 万股 (×10000 = actual shares). Turnover is a percentage: volume / (float_shares × 10000) × 100.
 
 **ETF 一般无 cat 2/3/5/7/8/9/10 记录**，因此 turnover/floatmv/totalmv 通常为 0；这是预期行为。B 股无股本记录时也沿用 0 值行为。

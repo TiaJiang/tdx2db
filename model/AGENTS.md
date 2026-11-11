@@ -26,7 +26,7 @@
 | KlineDay | raw_kline_daily | Raw OHLCV + date |
 | KlineMin | raw_kline_1min | Minute OHLCV + datetime |
 | SymbolClass | raw_symbol_class | Symbol → class mapping (stock/index/etf/block/unknown) |
-| BasicDaily | raw_basic_daily | Calculated: preclose, change_pct, amplitude, turnover, floatmv, totalmv (覆盖 stock + ETF + B 股) |
+| BasicDaily | raw_basic_daily | Calculated: preclose, change_pct, amplitude, turnover（百分比）, floatmv, totalmv (覆盖 stock + ETF + B 股) |
 | Factor | raw_adjust_factor | HFQ factor per symbol per date |
 | GbbqData | raw_gbbq | 股本变迁: category + C1-C4 (cat=1 除权 / 11 ETF 折算 / 2-10 股本变动) |
 | Meta | _meta | Key-value metadata (schema version, etc.) |

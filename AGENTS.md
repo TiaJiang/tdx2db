@@ -6,7 +6,7 @@
 ## OVERVIEW
 通达信(TDX) stock data importer — loads .day/.01/.5 files to DuckDB/ClickHouse, pulls online code names + block/industry/concept data via the eltdx Python client, calculates preclose/turnover/market-value (basic), and 后复权因子 (hfq_factor). basic/factor 链路覆盖 stock + ETF + B 股 (ETF 含 LOF/老封基)。
 
-Current schema version: **v7.0** (`model.SchemaMajor=7, SchemaMinor=0`). The `_meta` table stores the schema version; init/cron check major version compatibility at startup.
+Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_meta` table stores the schema version; init/cron check major version compatibility at startup.
 
 ## STRUCTURE
 ```
@@ -134,7 +134,7 @@ Input: `[]KlineDay` (raw daily) + `[]GbbqData` → Output: `[]*BasicDaily`
 2. **ETF cat=11 split**: `mergeSplitFromGbbq` 累乘 Splitc3，PreClose 末尾再除一次
 3. **Shares tracking** (category 2/3/5/7/8/9/10): maintains running float/total share counts (ETF 一般无此类记录)
 4. **Initial share backfill**: if first gbbq share record is after IPO date, uses its C1/C2 (pre-change values) to backfill the gap
-5. **Per-day**: preclose (adjusted for xdxr/split), change_pct, amplitude, turnover (vol/float_shares), floatmv, totalmv
+5. **Per-day**: preclose (adjusted for xdxr/split), change_pct, amplitude, turnover (百分比: vol/float_shares×100), floatmv, totalmv
 
 **PreClose formula** (with xdxr + split):
 ```

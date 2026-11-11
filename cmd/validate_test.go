@@ -67,7 +67,7 @@ func (f *fakeValidationRepo) GetSymbolsByClass(classes ...string) ([]string, err
 func TestRunValidationWarningOnlyPassesUnlessStrict(t *testing.T) {
 	day := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
 	repo := &fakeValidationRepo{
-		schema:               "7.0",
+		schema:               "8.0",
 		latestDate:           day,
 		symbols:              []string{"sh600000"},
 		basicDates:           map[string]time.Time{"sh600000": day},
@@ -102,7 +102,7 @@ func TestOHLCHistoricalIndexIsWarningAndStockIsCritical(t *testing.T) {
 	day := time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC)
 	latest := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
 	repo := &fakeValidationRepo{
-		schema:     "7.0",
+		schema:     "8.0",
 		latestDate: latest,
 		ohlcRows: []ohlcValidationRow{{
 			Symbol: "sh000001", Date: day, Open: 10, High: 9, Low: 10, Close: 9.5,
@@ -165,8 +165,8 @@ func TestLatestDateConsistencyIncludesBStock(t *testing.T) {
 
 func TestValidationJSONIsStable(t *testing.T) {
 	report := ValidationReport{
-		SchemaVersion:         "7.0",
-		ExpectedSchemaVersion: "7.0",
+		SchemaVersion:         "8.0",
+		ExpectedSchemaVersion: "8.0",
 		Passed:                true,
 		Checks: []ValidationCheck{{
 			Check:    "sample",

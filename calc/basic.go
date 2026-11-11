@@ -389,7 +389,7 @@ func CalculateBasicDaily(
 
 		if currentFloat > 0 {
 			volFloat := float64(sd.Volume)
-			val := volFloat / (currentFloat * 10000)
+			val := volFloat / (currentFloat * 10000) * 100
 			basic.Turnover = math.Round(val*1000000) / 1000000
 			fmv := currentFloat * 10000 * sd.Close
 			basic.FloatMV = math.Round(fmv*100) / 100

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -32,6 +33,36 @@ func TestCalculatePreClosePriceAppliesXdxr(t *testing.T) {
 	want := ((10*10 - 0.5) + 1*5) / (10 + 1 + 2) / 2
 	if got != want {
 		t.Fatalf("calculatePreClosePrice() = %v, want %v", got, want)
+	}
+}
+
+func TestCalculateBasicDailyTurnoverUsesPercent(t *testing.T) {
+	day := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+	rows := []model.KlineDay{{
+		Symbol: "sh600000",
+		Date:   day,
+		Close:  10,
+		Volume: 385900,
+	}}
+	gbbq := []model.GbbqData{{
+		Symbol:   "sh600000",
+		Date:     day,
+		Category: 2,
+		C1:       100,
+		C2:       200,
+		C3:       10000,
+		C4:       20000,
+	}}
+
+	got, err := CalculateBasicDaily(rows, gbbq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("rows = %d, want 1", len(got))
+	}
+	if math.Abs(got[0].Turnover-0.3859) > 1e-9 {
+		t.Fatalf("turnover = %v, want 0.3859 percent", got[0].Turnover)
 	}
 }
 

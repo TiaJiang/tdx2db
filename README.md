@@ -104,10 +104,10 @@ tdx2db cron --dburi 'duckdb://tdx.db' --min
 
 | 表 / 视图               | 说明                              |
 | :---------------------- | :-------------------------------- |
-| `_meta`                 | schema 版本等元信息 (当前 v7.0)   |
+| `_meta`                 | schema 版本等元信息 (当前 v8.0)   |
 | `raw_kline_daily`       | 日线；指数/板块含涨跌家数         |
 | `raw_kline_1min`        | 1 分钟 K 线                       |
-| `raw_basic_daily`       | 股票 / ETF / B 股前收盘价、换手率与市值 |
+| `raw_basic_daily`       | 股票 / ETF / B 股前收盘价、换手率（百分比）与市值 |
 | `raw_adjust_factor`     | 后复权因子                        |
 | `raw_gbbq`              | 股本变迁                          |
 | `raw_holidays`          | 假期日历                          |
@@ -120,7 +120,7 @@ tdx2db cron --dburi 'duckdb://tdx.db' --min
 | `v_bstock_{qfq,hfq}`    | B 股前复权 / 后复权日线 |
 | `v_index`               | 指数原始日线（OHLCV、成交额、涨跌家数） |
 
-复权视图按 `v_<class>_<fq>` 命名，仅提供 QFQ/HFQ。股票价格 ROUND 2 位、ETF/B 股 ROUND 3 位。ETF 视图不包含 `turnover`、`floatmv`、`totalmv`。指数不参与 basic/factor 计算，原始日线通过读取 `raw_kline_daily` 的 `v_index` 提供，不提供指数复权视图。
+`raw_basic_daily.turnover` 使用百分比，`0.3859` 表示 `0.3859%`。复权视图按 `v_<class>_<fq>` 命名，仅提供 QFQ/HFQ。股票价格 ROUND 2 位、ETF/B 股 ROUND 3 位。ETF 视图不包含 `turnover`、`floatmv`、`totalmv`。指数不参与 basic/factor 计算，原始日线通过读取 `raw_kline_daily` 的 `v_index` 提供，不提供指数复权视图。
 
 ```sql
 -- 股票前复权

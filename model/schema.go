@@ -5,7 +5,7 @@ import "time"
 // SchemaMajor 表示数据库 schema 的主版本号。
 // 当发生破坏性变更（表重命名、字段语义变化等）时递增。
 // 已安装的数据库 major 版本与当前代码不匹配时，工具将拒绝操作并提示用户查看文档。
-const SchemaMajor = 7
+const SchemaMajor = 8
 
 // SchemaMinor 表示数据库 schema 的次版本号。
 // 当发生非破坏性变更（新增表、新增字段等）时递增。
@@ -55,7 +55,7 @@ type BasicDaily struct {
 	PreClose      float64   `col:"preclose"`
 	ChangePercent float64   `col:"change_pct"`
 	Amplitude     float64   `col:"amplitude"`
-	Turnover      float64   `col:"turnover"`
+	Turnover      float64   `col:"turnover"` // 百分比，0.3859 表示 0.3859%
 	FloatMV       float64   `col:"floatmv"`
 	TotalMV       float64   `col:"totalmv"`
 }

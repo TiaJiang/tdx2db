@@ -145,10 +145,18 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME}"
           DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          go build \
+          set +e
+          output=$(go build \
             -trimpath \
             -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA} -X main.date=${DATE}" \
-            -o tdx2db .
+            -o tdx2db . 2>&1)
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$output"
+            message=$(printf '%s' "$output" | tr '\n' ' ' | cut -c1-6000)
+            printf '::error title=go build failed::%s\n' "$message"
+            exit "$status"
+          fi
 
       - name: Smoke test
         run: |

@@ -280,14 +280,71 @@ func (d *DuckDBDriver) ImportHolidays(path string) error {
 	return d.ImportCSV(model.TableHoliday, path)
 }
 
-func (d *DuckDBDriver) ImportBlockInfo(path string) error {
-	d.TruncateTable(model.TableBlockInfo)
-	return d.ImportCSV(model.TableBlockInfo, path)
+func (d *DuckDBDriver) ImportBlockSnapshot(infoPath, memberPath string) error {
+	tx, err := d.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin block import: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, staging := range []string{"incoming_block_info", "incoming_block_member"} {
+		if _, err := tx.Exec("DROP TABLE IF EXISTS " + staging); err != nil {
+			return fmt.Errorf("failed to clear block staging table %s: %w", staging, err)
+		}
+	}
+
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_block_info AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s}
+		)
+	`, infoPath, duckDBCSVColumns(d, model.TableBlockInfo))); err != nil {
+		return fmt.Errorf("failed to stage block info csv: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_block_member AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s}
+		)
+	`, memberPath, duckDBCSVColumns(d, model.TableBlockMember))); err != nil {
+		return fmt.Errorf("failed to stage block member csv: %w", err)
+	}
+
+	if _, err := tx.Exec("DELETE FROM " + model.TableBlockInfo.TableName); err != nil {
+		return fmt.Errorf("failed to clear block info: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM " + model.TableBlockMember.TableName); err != nil {
+		return fmt.Errorf("failed to clear block members: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(
+		`INSERT INTO %s
+		 SELECT DISTINCT block_type, block_name, block_symbol, block_code,
+			COALESCE(parent_code, ''), block_level
+		 FROM incoming_block_info`,
+		model.TableBlockInfo.TableName,
+	)); err != nil {
+		return fmt.Errorf("failed to insert block info: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(
+		"INSERT INTO %s SELECT DISTINCT * FROM incoming_block_member",
+		model.TableBlockMember.TableName,
+	)); err != nil {
+		return fmt.Errorf("failed to insert block members: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit block import: %w", err)
+	}
+	return nil
 }
 
-func (d *DuckDBDriver) ImportBlockMembers(path string) error {
-	d.TruncateTable(model.TableBlockMember)
-	return d.ImportCSV(model.TableBlockMember, path)
+func duckDBCSVColumns(d *DuckDBDriver, meta *model.TableMeta) string {
+	colMaps := make([]string, 0, len(meta.Columns))
+	for _, col := range meta.Columns {
+		colMaps = append(colMaps, fmt.Sprintf("'%s': '%s'", col.Name, d.mapType(col.Type)))
+	}
+	return strings.Join(colMaps, ", ")
 }
 
 func (d *DuckDBDriver) ImportSymbolNames(path string) error {

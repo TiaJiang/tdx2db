@@ -51,13 +51,14 @@ type Task struct {
 }
 
 type TaskArgs struct {
-	Min        bool
-	TempDir    string
-	VipdocDir  string
-	DayFileDir string
-	Today      time.Time
-	Plan       *WorkPlan
-	Extra      map[string]interface{}
+	Min          bool
+	TempDir      string
+	VipdocDir    string
+	DayFileDir   string
+	BoardDataDir string
+	Today        time.Time
+	Plan         *WorkPlan
+	Extra        map[string]interface{}
 }
 
 // TaskExecutor manages and executes tasks with dependency resolution

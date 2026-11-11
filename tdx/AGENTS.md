@@ -12,8 +12,9 @@
 ├── gbbq.go        # 股本变迁 parsing
 ├── holidays.go    # 交易日历解析 (zhb.zip → needini.dat)
 ├── eltdx.go       # embedded Python bridge runner
-├── eltdx_online.py # eltdx code-list / board fetcher
-├── block.go       # 在线板块/行业/概念信息 + 成分关系转换
+├── eltdx_online.py # eltdx code-list / F10 board fetcher
+├── block.go       # F10 + 静态板块合并、归一化、去重与旧数据保留
+├── board_static.go # tdxzs/tdxzs3/tdxhy 静态目录与 880/881 行业成分解析
 ├── stock.go       # 在线代码名称转换
 ├── gbbq_var.go    # TDX datatool variable definitions
 ├── datatool.go    # Embedded datatool interface (Linux only)
@@ -26,7 +27,7 @@
 | Add new K-line format | kline.go | Follow 32-byte record pattern |
 | Parse holidays | holidays.go | needini.dat 文本解析 |
 | Modify gbbq parsing | gbbq.go | Uses embedded datatool |
-| Modify online block data | block.go + eltdx_online.py | eltdx board list/member API |
+| Modify online block data | block.go + board_static.go + eltdx_online.py | static catalog + F10 7615, never MAC |
 | Modify online code names | stock.go + eltdx_online.py | eltdx code table API |
 | Modify Python bridge | eltdx.go | embedded script execution + JSON decoding |
 | TDX binary format | All files | Little-endian byte order |
@@ -53,7 +54,7 @@
 - Context cancellation checked in loops
 
 **Online data:**
-- `FetchOnlineBlocks(ctx)` returns `[]model.BlockInfo` + `[]model.BlockMember` for block/industry/concept imports
+- `FetchOnlineBlocks(ctx, options)` returns a block snapshot with warnings, failed block codes and old-data preservation flags
 - `FetchOnlineSymbolNames(ctx)` returns `[]model.SymbolName` for online code-name imports, filtering stock / etf / index classes
 - `eltdx_online.py` is embedded into the Go binary and executed with Python; the runtime requires Python >= 3.10 and `eltdx`
 - These online fetchers are update-time helpers; raw daily ingestion and basic/factor calculations still use parsed K-line files + `raw_symbol_class`

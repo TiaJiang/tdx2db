@@ -14,7 +14,7 @@ import (
 //go:embed eltdx_online.py
 var eltdxOnlineScript string
 
-func runEltdx(ctx context.Context, mode string) ([]byte, error) {
+func runEltdx(ctx context.Context, mode string, args ...string) ([]byte, error) {
 	python := os.Getenv("TDX2DB_PYTHON")
 	if python == "" {
 		python = "python3"
@@ -23,7 +23,8 @@ func runEltdx(ctx context.Context, mode string) ([]byte, error) {
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, python, "-", mode)
+	commandArgs := append([]string{"-", mode}, args...)
+	cmd := exec.CommandContext(ctx, python, commandArgs...)
 	cmd.Stdin = strings.NewReader(eltdxOnlineScript)
 	cmd.Env = append(os.Environ(), "PYTHONIOENCODING=utf-8")
 

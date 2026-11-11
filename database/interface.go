@@ -23,8 +23,7 @@ type DataRepository interface {
 	ImportGBBQ(csvPath string) error
 	ImportBasic(csvPath string, rebuildSymbols []string) error
 	ImportHolidays(csvPath string) error
-	ImportBlockInfo(csvPath string) error
-	ImportBlockMembers(csvPath string) error
+	ImportBlockSnapshot(infoCSVPath, memberCSVPath string) error
 	ImportSymbolNames(csvPath string) error
 
 	TruncateTable(meta *model.TableMeta) error

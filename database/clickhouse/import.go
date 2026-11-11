@@ -202,18 +202,21 @@ func (d *ClickHouseDriver) ImportHolidays(path string) error {
 	return d.ImportCSV(model.TableHoliday, path)
 }
 
-func (d *ClickHouseDriver) ImportBlockInfo(path string) error {
+// shortcut: ClickHouse has no cross-table transaction here; DuckDB's implementation is transactional.
+func (d *ClickHouseDriver) ImportBlockSnapshot(infoPath, memberPath string) error {
 	if err := d.TruncateTable(model.TableBlockInfo); err != nil {
-		return err
+		return fmt.Errorf("failed to clear block info: %w", err)
 	}
-	return d.ImportCSV(model.TableBlockInfo, path)
-}
-
-func (d *ClickHouseDriver) ImportBlockMembers(path string) error {
+	if err := d.ImportCSV(model.TableBlockInfo, infoPath); err != nil {
+		return fmt.Errorf("failed to import block info: %w", err)
+	}
 	if err := d.TruncateTable(model.TableBlockMember); err != nil {
-		return err
+		return fmt.Errorf("failed to clear block members: %w", err)
 	}
-	return d.ImportCSV(model.TableBlockMember, path)
+	if err := d.ImportCSV(model.TableBlockMember, memberPath); err != nil {
+		return fmt.Errorf("failed to import block members: %w", err)
+	}
+	return nil
 }
 
 func (d *ClickHouseDriver) ImportSymbolNames(path string) error {

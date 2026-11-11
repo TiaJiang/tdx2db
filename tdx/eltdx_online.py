@@ -2,11 +2,12 @@
 
 import json
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 try:
-    from eltdx import TdxClient
+    from eltdx import F10Client, TdxClient
     from eltdx.hosts import DEFAULT_HOSTS
-    from eltdx.mac import BoardType, MacClient, PresetField, SortOrder, SortType
 except ImportError:
     print(
         'eltdx is required: python3 -m pip install "eltdx>=3.3.5" '
@@ -16,28 +17,23 @@ except ImportError:
     raise SystemExit(1)
 
 
-BOARD_TYPES = (
-    (BoardType.HY, "industry", 1),
-    (BoardType.HY2, "industry", 2),
-    (BoardType.GN, "concept", 1),
-    (BoardType.FG, "style", 1),
-    (BoardType.DQ, "region", 1),
-    (BoardType.YJ_LEVEL1, "tdx_research", 1),
-    (BoardType.YJ_LEVEL2, "tdx_research", 2),
-    (BoardType.YJ_LEVEL3, "tdx_research", 3),
-)
-
 MARKET_PREFIX = {0: "sz", 1: "sh", 2: "bj"}
 TDX_TIMEOUT = 10
 TDX_HOST_ATTEMPTS = 8
+F10_TIMEOUT = 10
+F10_ATTEMPTS = 3
+F10_WORKERS = 8
 
 
 def market_symbol(market, code):
-    prefix = MARKET_PREFIX.get(int(market))
-    code = str(code or "").strip()
-    if not prefix or not code:
-        return ""
-    return prefix + code
+    code = str(code or "").strip().lower()
+    if code.startswith(("sh", "sz", "bj")):
+        return code
+    try:
+        prefix = MARKET_PREFIX.get(int(market))
+    except (TypeError, ValueError):
+        prefix = None
+    return f"{prefix}{code}" if prefix and len(code) == 6 else ""
 
 
 def fetch_symbols():
@@ -69,47 +65,148 @@ def fetch_symbols():
     return {"symbols": symbols}
 
 
-def fetch_blocks():
+def call_with_retry(operation, *args, **kwargs):
+    last_error = None
+    for attempt in range(1, F10_ATTEMPTS + 1):
+        try:
+            return operation(*args, **kwargs)
+        except Exception as exc:
+            last_error = exc
+            if attempt < F10_ATTEMPTS:
+                time.sleep(0.2 * attempt)
+    raise last_error
+
+
+def theme_rows(client, block_code):
+    response = call_with_retry(
+        client.theme_market,
+        block_code,
+        200744,
+        page=-1,
+        page_size=-1,
+    )
+    if not response.ok or len(response.result_sets) < 2:
+        return []
+    return response.result_sets[1].rows
+
+
+def index_info_name(client, block_code):
+    response = call_with_retry(
+        client.market_report,
+        block_code,
+        "index_info",
+    )
+    if not response.ok or not response.result_sets:
+        return ""
+    for row in response.result_sets[0].rows:
+        name = str(row.get("T003") or "").strip()
+        if name:
+            return name
+    return ""
+
+
+def fetch_theme_task(client, task):
+    block_code = str(task.get("block_code") or "").strip()
+    block_type = str(task.get("block_type") or "").strip()
+    if not block_code or not block_type:
+        return [], [], []
+    try:
+        rows = theme_rows(client, block_code)
+    except Exception as exc:
+        return [], [f"{block_code} theme_market 200744 failed: {type(exc).__name__}: {exc}"], [block_code]
+    if not rows:
+        return [], [f"{block_code} theme_market 200744 returned no rows"], [block_code]
+
+    members = []
+    for row in rows:
+        stock_symbol = market_symbol(row.get("N001"), row.get("N002"))
+        if stock_symbol:
+            members.append({"stock_symbol": stock_symbol, "block_code": block_code})
+    return members, [], []
+
+
+def fetch_index_task(client, task):
+    block_code = str(task.get("block_code") or "").strip()
+    fallback_name = str(task.get("block_name") or "").strip()
+    if not block_code:
+        return None, [], [], []
+    try:
+        table = call_with_retry(client.index_members, block_code)
+    except Exception as exc:
+        return None, [], [f"{block_code} index_members failed: {type(exc).__name__}: {exc}"], [block_code]
+
+    warnings = []
+    name = fallback_name
+    try:
+        name = index_info_name(client, block_code) or fallback_name or block_code
+    except Exception as exc:
+        warnings.append(f"{block_code} index_info failed: {type(exc).__name__}: {exc}")
+
+    info = {
+        "block_type": "index",
+        "block_name": name or block_code,
+        "block_symbol": block_code,
+        "block_code": block_code,
+        "parent_code": "",
+        "block_level": 1,
+    }
+    if not table.rows:
+        warnings.append(f"{block_code} index_members returned no rows")
+        return info, [], warnings, [block_code]
+
+    members = []
+    for row in table.rows:
+        stock_symbol = str(row.full_code or "").strip()
+        if not stock_symbol:
+            stock_symbol = market_symbol(row.market_id, row.code)
+        if stock_symbol:
+            members.append({"stock_symbol": stock_symbol, "block_code": block_code})
+    return info, members, warnings, []
+
+
+def fetch_blocks(tasks_path):
+    with open(tasks_path, "r", encoding="utf-8") as handle:
+        tasks = json.load(handle)
+
+    client = F10Client(timeout=F10_TIMEOUT)
     infos = {}
     members = {}
-    with MacClient(timeout=20) as client:
-        for board_type, block_type, level in BOARD_TYPES:
-            for board in client.get_board_list(board_type, count=10000):
-                board_code = str(board.code or "").strip()
-                if not board_code:
-                    continue
-                block_symbol = market_symbol(board.market, board_code)
-                if not block_symbol:
-                    block_symbol = "sh" + board_code
-                block_name = str(board.name or "").strip()
-                if not block_name:
-                    continue
-                infos.setdefault(
-                    block_symbol,
-                    {
-                        "block_type": block_type,
-                        "block_name": block_name,
-                        "block_symbol": block_symbol,
-                        "block_code": block_symbol,
-                        "parent_code": "",
-                        "block_level": level,
-                    },
-                )
-                for member in client.get_board_members(
-                    board_code,
-                    count=5000,
-                    sort_type=SortType.CODE,
-                    sort_order=SortOrder.NONE,
-                    fields=PresetField.NONE,
-                ):
-                    stock_symbol = market_symbol(member.market, member.code)
-                    if not stock_symbol:
-                        continue
-                    members[(stock_symbol, block_symbol)] = {
-                        "stock_symbol": stock_symbol,
-                        "block_code": block_symbol,
-                    }
-    return {"blocks": list(infos.values()), "members": list(members.values())}
+    warnings = []
+    failed_blocks = set()
+
+    theme_tasks = list(tasks.get("themes") or [])
+    index_tasks = list(tasks.get("indices") or [])
+    max_workers = min(F10_WORKERS, max(1, len(theme_tasks) + len(index_tasks)))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for task_members, task_warnings, task_failed in executor.map(
+            lambda task: fetch_theme_task(client, task),
+            theme_tasks,
+        ):
+            warnings.extend(task_warnings)
+            failed_blocks.update(task_failed)
+            for member in task_members:
+                members[(member["stock_symbol"], member["block_code"])] = member
+
+        for info, task_members, task_warnings, task_failed in executor.map(
+            lambda task: fetch_index_task(client, task),
+            index_tasks,
+        ):
+            warnings.extend(task_warnings)
+            failed_blocks.update(task_failed)
+            if info:
+                infos[info["block_code"]] = info
+            for member in task_members:
+                members[(member["stock_symbol"], member["block_code"])] = member
+
+    return {
+        "blocks": sorted(infos.values(), key=lambda item: item["block_code"]),
+        "members": sorted(
+            members.values(),
+            key=lambda item: (item["block_code"], item["stock_symbol"]),
+        ),
+        "warnings": sorted(set(warnings)),
+        "failed_blocks": sorted(failed_blocks),
+    }
 
 
 def main():
@@ -117,7 +214,9 @@ def main():
     if mode == "symbols":
         payload = fetch_symbols()
     elif mode == "blocks":
-        payload = fetch_blocks()
+        if len(sys.argv) < 3:
+            raise ValueError("blocks mode requires a task JSON path")
+        payload = fetch_blocks(sys.argv[2])
     else:
         raise ValueError("mode must be symbols or blocks")
     json.dump(payload, sys.stdout, ensure_ascii=False, separators=(",", ":"))

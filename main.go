@@ -55,6 +55,7 @@ Database URI:
 
 const dayFileInfo = "通达信日线文件目录"
 const minInfo = "导入 1 分钟分时数据（可选）"
+const boardDataInfo = "通达信板块静态文件目录（tdxzs.cfg/tdxzs3.cfg/tdxhy.cfg）"
 
 func main() {
 	// 创建可取消的 context
@@ -100,6 +101,7 @@ func main() {
 	var (
 		dbURI          string
 		dayFileDir     string
+		boardDataDir   string
 		minEnable      bool
 		validateFormat string
 		validateStrict bool
@@ -121,7 +123,7 @@ func main() {
 		Example: `  tdx2db cron --dburi 'clickhouse://localhost' --min
   tdx2db cron --dburi 'duckdb://./tdx.db'` + dbURIHelp,
 		RunE: func(c *cobra.Command, args []string) error {
-			return cmd.Cron(ctx, dbURI, minEnable)
+			return cmd.Cron(ctx, dbURI, minEnable, boardDataDir)
 		},
 	}
 
@@ -146,6 +148,7 @@ func main() {
 	cronCmd.Flags().StringVar(&dbURI, "dburi", "", dbURIInfo)
 	cronCmd.MarkFlagRequired("dburi")
 	cronCmd.Flags().BoolVar(&minEnable, "min", false, minInfo)
+	cronCmd.Flags().StringVar(&boardDataDir, "board-data-dir", "", boardDataInfo)
 
 	// Validate Flags
 	validateCmd.Flags().StringVar(&dbURI, "dburi", "", dbURIInfo)

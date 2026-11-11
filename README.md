@@ -10,7 +10,7 @@
 - **增量更新**：日线 / 股本变迁 / 假期日历一条 `cron` 命令搞定
 - **分时数据**：可选导入 1 分钟分时
 - **复权与衍生**：自动计算后复权因子、前收盘价、换手率、市值
-- **在线数据**：基于 eltdx 拉取在线代码名称 + 板块 / 概念 / 行业及成分
+- **在线数据**：基于 eltdx F10 拉取在线代码名称 + 板块 / 指数成分；板块目录与 880 行业来自本地静态 cfg
 - **稳定可靠**：基于通达信公开数据，无需收费或限流接口
 
 ## 声明
@@ -40,6 +40,8 @@ python -m pip install "eltdx>=3.3.5"
 ```
 
 如使用虚拟环境，可通过 `TDX2DB_PYTHON` 指定 Python 解释器路径。
+
+板块目录需要通达信客户端目录中的 `tdxzs.cfg`、`tdxzs3.cfg` 和 `tdxhy.cfg`。通过 `--board-data-dir` 或 `TDX2DB_BOARD_DATA_DIR` 指定这些文件所在目录；未配置时 cron 不会失败，会仅更新数据库已有指数并保留旧的非指数板块。
 
 ## 使用
 
@@ -77,6 +79,9 @@ tdx2db init --dburi 'clickhouse://localhost' --dayfiledir ./vipdoc
 
 ```bash
 tdx2db cron --dburi 'duckdb://tdx.db'
+
+# 指定 tdxzs.cfg / tdxzs3.cfg / tdxhy.cfg 所在目录
+tdx2db cron --dburi 'duckdb://tdx.db' --board-data-dir /path/to/T0002/hq_cache
 
 # 加 --min 才会下载并导入 1 分钟分时
 tdx2db cron --dburi 'duckdb://tdx.db' --min
@@ -164,7 +169,7 @@ go build -trimpath -o tdx2db .
 
 涉及导入、计算、workflow 或 schema 的改动，还需要使用临时 DuckDB 库执行 `init`、`cron` 和第二次 `cron`，验证数据覆盖、重复键和增量幂等性。`init` 只导入日线，第一次 `cron` 才补齐 GBBQ、holidays 和 basic/factor。不得直接修改生产库 `\path\to\tdx.db` 做开发测试。
 
-> 当前 ClickHouse 的按 symbol staging/mutation 路径尚未在真实 ClickHouse 实例上完成集成测试。现有验证覆盖 Windows CGO 单元测试、编译检查，以及 DuckDB 临时库的完整 `init -> cron -> cron -> validate` 链路。
+> 当前 ClickHouse 的板块快照替换使用逐表清空和导入，不是跨表事务；该路径尚未在真实 ClickHouse 实例上完成集成测试。现有验证覆盖 Windows CGO 单元测试、编译检查，以及 DuckDB 临时库的完整 `init -> cron -> cron -> validate` 链路。
 
 ## 致谢
 

@@ -61,7 +61,7 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 | ClassifyCode | func | model/classify.go:58 | symbol → stock/index/etf/block/unknown |
 | PriceScale | func | model/classify.go:89 | TDX 原始整数价格换算 (股票=100, ETF/B股=1000, 可转债=10000) |
 | SchemaFromStruct | func | model/tables.go:54 | Reflect-based table registration |
-| FetchOnlineBlocks | func | tdx/block.go:32 | 通过 eltdx 拉取在线板块/概念/行业及成分数据 |
+| FetchOnlineBlocks | func | tdx/block.go | 合并静态板块目录、F10 板块/指数成分并保留失败板块旧数据 |
 | FetchOnlineSymbolNames | func | tdx/stock.go:22 | 通过 eltdx 拉取沪深京在线代码名称 |
 
 ## CONVENTIONS
@@ -87,9 +87,10 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 
 **Online eltdx data:**
 - `tdx/eltdx.go` runs the embedded `tdx/eltdx_online.py` bridge and decodes its JSON output
-- `tdx/eltdx_online.py` uses `TdxClient.codes.all_markets()` for online code names and `MacClient.get_board_list()/get_board_members()` for block/industry/concept data
-- `tdx/block.go` / `tdx/stock.go` only handle model filtering, deduplication and sorting
-- `update_blocks` and `update_symbol_names` are independent update tasks; they truncate + reimport their target tables
+- `tdx/eltdx_online.py` uses `TdxClient.codes.all_markets()` for online code names and `F10Client` for board/index members; no MAC dependency or fallback
+- `tdx/board_static.go` parses configurable `tdxzs.cfg` / `tdxzs3.cfg` / `tdxhy.cfg` for catalog, 880/881 hierarchy and 880/881 industry members
+- `tdx/block.go` merges static catalog data with F10 members, normalizes market prefixes, deduplicates and preserves previous rows for unavailable blocks
+- `update_blocks` depends on `update_daily`, then replaces both block tables via `ImportBlockSnapshot`; `TDX2DB_BOARD_DATA_DIR` or `--board-data-dir` provides the static directory
 
 **Symbol classification (model/classify.go):**
 - `ClassifyCode(symbol) → stock/index/etf/block/unknown`
@@ -178,7 +179,7 @@ Input: `[]BasicDaily` + `[]GbbqData` → Output: `[]Factor`
 - Error modes: `ErrorModeStop` (default) vs `ErrorModeSkip`
 
 **Incremental update logic:**
-- `cron` command 先 `BuildWorkPlan(db, today)` → 全 `Skip` 则直接退出，否则跑 DAG: `update_daily → fetch_gbbq → update_gbbq → calc_basic → calc_factor`；`update_holidays` depends on `fetch_gbbq`，`update_blocks` / `update_symbol_names` 独立并行
+- `cron` command 先 `BuildWorkPlan(db, today)` → 全 `Skip` 则直接退出，否则跑 DAG: `update_daily → fetch_gbbq → update_gbbq → calc_basic → calc_factor`；`update_holidays` depends on `fetch_gbbq`，`update_daily → update_blocks`，`update_symbol_names` 独立并行
 - raw_holidays 为空（首次/旧库）时 plan 强制走全流程，让 holidays 自行写入
 - `BuildWorkPlan` 按 eligible 标的逐个比较 kline/basic/factor 最新日期，新增或滞后的 B 股不会因全库 MAX(date) 已最新而被跳过
 - `calc_basic` 无 GBBQ 变化时从各标的最新 basic 日期继续增量追加；GBBQ 变化只重建受影响标的，无法确定影响范围时才全量重算
@@ -334,6 +335,7 @@ critical 必须为零；历史 OHLC warning 可以存在，但必须在最终结
 - ETF 拆分日 (cat=11) PreClose 必须除以 Splitc3，否则当天涨跌幅会异常
 - `raw_symbol_class` is rebuilt from `raw_kline_daily` on each daily import — adding classification rules retroactively will auto-classify on next import
 - `raw_symbol_name` comes from online quote-server code-name data and is separate from `raw_symbol_class`; class is stored from the online list but basic/factor still use `raw_symbol_class`
-- `raw_tdx_blocks_info` / `raw_tdx_blocks_member` come from online eltdx board data and are not part of basic/factor calculation
+- `raw_tdx_blocks_info` / `raw_tdx_blocks_member` come from F10 + static TDX board files and are not part of basic/factor calculation
+- ClickHouse 的板块快照逐表替换，不是跨表事务；DuckDB 的 `ImportBlockSnapshot` 是单事务
 - online metadata requires Python >= 3.10 with `eltdx` installed; `TDX2DB_PYTHON` can point to a specific interpreter
 - holidays 来自 gbbq.zip 内嵌的 zhb.zip (needini.dat)，不再依赖 tdxhome 安装目录

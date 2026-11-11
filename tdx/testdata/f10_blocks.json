@@ -1,0 +1,54 @@
+{
+  "blocks": [
+    {
+      "block_type": "index",
+      "block_name": "沪深300",
+      "block_symbol": "000300",
+      "block_code": "000300",
+      "parent_code": "",
+      "block_level": 0
+    },
+    {
+      "block_type": "index",
+      "block_name": "沪深300",
+      "block_symbol": "sh000300",
+      "block_code": "sh000300",
+      "parent_code": "",
+      "block_level": 1
+    },
+    {
+      "block_type": "tdx_research",
+      "block_name": "应忽略",
+      "block_symbol": "sh999999",
+      "block_code": "sh999999",
+      "parent_code": "",
+      "block_level": 1
+    }
+  ],
+  "members": [
+    {
+      "stock_symbol": "sz000001",
+      "block_code": "000300"
+    },
+    {
+      "stock_symbol": "sh600000",
+      "block_code": "sh000300"
+    },
+    {
+      "stock_symbol": "sz000001",
+      "block_code": "sh000300"
+    },
+    {
+      "stock_symbol": "",
+      "block_code": "sh000300"
+    }
+  ],
+  "warnings": [
+    "sample warning",
+    "sample warning"
+  ],
+  "failed_blocks": [
+    "880522",
+    "sh880522"
+  ]
+}

@@ -35,7 +35,10 @@ type BasicExportOptions struct {
 	FullRecalc     bool
 	Symbols        []string
 	RebuildSymbols []string
+	FactorCSVPath  string
 }
+
+const calcQueryBatchSize = 200
 
 // ExportBasicDailyToCSV 计算并导出 BasicDaily 数据 (覆盖 stock + etf + bstock)。
 // Symbols 为 nil 时导出全部 stock/etf/bstock；非 nil 时仅导出指定标的。
@@ -66,6 +69,19 @@ func ExportBasicDailyToCSV(
 	}
 	defer cw.Close()
 
+	var factorCw *utils.CSVWriter[model.Factor]
+	if opts.FactorCSVPath != "" {
+		factorCw, err = utils.NewCSVWriter[model.Factor](opts.FactorCSVPath)
+		if err != nil {
+			return 0, err
+		}
+		defer func() {
+			if factorCw != nil {
+				_ = factorCw.Close()
+			}
+		}()
+	}
+
 	basicCtx := &BasicContext{
 		DB:        db,
 		GbbqIndex: gbbqIndex,
@@ -85,34 +101,97 @@ func ExportBasicDailyToCSV(
 		rebuildSet[symbol] = struct{}{}
 	}
 
-	pipeline := utils.NewPipeline[string, model.BasicDaily]()
+	fullSymbols := make([]string, 0, len(symbols))
+	incrementalSymbols := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		_, rebuild := rebuildSet[symbol]
+		_, hasLatest := basicCtx.LatestBasics[symbol]
+		if opts.FullRecalc || rebuild || !hasLatest {
+			fullSymbols = append(fullSymbols, symbol)
+		} else {
+			incrementalSymbols = append(incrementalSymbols, symbol)
+		}
+	}
+	if factorCw != nil && len(incrementalSymbols) > 0 {
+		return 0, fmt.Errorf("factor csv requires full recalculation for every symbol")
+	}
 
-	result, err := pipeline.Run(
-		ctx,
-		symbols,
-		func(ctx context.Context, symbol string) ([]model.BasicDaily, error) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+	rowCount := 0
+	for start := 0; start < len(fullSymbols); start += calcQueryBatchSize {
+		end := start + calcQueryBatchSize
+		if end > len(fullSymbols) {
+			end = len(fullSymbols)
+		}
+		batch := fullSymbols[start:end]
+		klineBySymbol, err := db.GetKlineDailyBySymbols(ctx, batch)
+		if err != nil {
+			return 0, fmt.Errorf("failed to query kline daily batch: %w", err)
+		}
+
+		for _, symbol := range batch {
+			stockData := klineBySymbol[symbol]
+			if len(stockData) == 0 {
+				continue
 			}
-			_, rebuild := rebuildSet[symbol]
-			return processBasicDaily(basicCtx, symbol, opts.FullRecalc || rebuild)
-		},
-		func(rows []model.BasicDaily) error {
-			return cw.Write(rows)
-		},
-	)
 
-	if err != nil {
-		return 0, err
+			basics, err := CalculateBasicDaily(stockData, getGbbqBySymbol(basicCtx.GbbqIndex, symbol))
+			if err != nil {
+				return 0, fmt.Errorf("calc %s failed: %w", symbol, err)
+			}
+			rows := make([]model.BasicDaily, len(basics))
+			for i, basic := range basics {
+				rows[i] = *basic
+			}
+			if err := cw.Write(rows); err != nil {
+				return 0, err
+			}
+			rowCount += len(rows)
+
+			if factorCw != nil {
+				if err := factorCw.Write(calculateFullHfq(rows)); err != nil {
+					return 0, fmt.Errorf("failed to write precomputed factor csv: %w", err)
+				}
+			}
+		}
+		fmt.Printf("basic full batch %d/%d symbols=%d rows=%d\n",
+			start/calcQueryBatchSize+1, (len(fullSymbols)+calcQueryBatchSize-1)/calcQueryBatchSize,
+			len(batch), rowCount)
 	}
 
-	if result.HasErrors() {
-		return 0, fmt.Errorf("export completed with %s", result.ErrorSummary())
+	if len(incrementalSymbols) > 0 {
+		pipeline := utils.NewPipeline[string, model.BasicDaily]()
+		result, err := pipeline.Run(
+			ctx,
+			incrementalSymbols,
+			func(ctx context.Context, symbol string) ([]model.BasicDaily, error) {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				default:
+				}
+				return processBasicDaily(basicCtx, symbol, false)
+			},
+			func(rows []model.BasicDaily) error {
+				return cw.Write(rows)
+			},
+		)
+		if err != nil {
+			return 0, err
+		}
+		if result.HasErrors() {
+			return 0, fmt.Errorf("export completed with %s", result.ErrorSummary())
+		}
+		rowCount += int(result.OutputRows)
 	}
 
-	return int(result.OutputRows), nil
+	if factorCw != nil {
+		if err := factorCw.Close(); err != nil {
+			return 0, fmt.Errorf("failed to close precomputed factor csv: %w", err)
+		}
+		factorCw = nil
+	}
+
+	return rowCount, nil
 }
 
 func processBasicDaily(bc *BasicContext, symbol string, fullRecalc bool) ([]model.BasicDaily, error) {

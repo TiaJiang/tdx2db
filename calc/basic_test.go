@@ -3,6 +3,7 @@ package calc
 import (
 	"context"
 	"encoding/csv"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -84,6 +85,77 @@ func TestExportBasicDailyDefaultsIncludeBStock(t *testing.T) {
 	wantClasses := []string{model.ClassStock, model.ClassETF, model.ClassBStock}
 	if len(repo.classCalls) != 1 || !reflect.DeepEqual(repo.classCalls[0], wantClasses) {
 		t.Fatalf("class calls = %v, want %v", repo.classCalls, wantClasses)
+	}
+}
+
+func TestExportBasicDailyFullUsesBatchedQueries(t *testing.T) {
+	day := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+	symbols := make([]string, calcQueryBatchSize+1)
+	klines := make(map[string][]model.KlineDay, len(symbols))
+	for i := range symbols {
+		symbol := fmt.Sprintf("sh%06d", i)
+		symbols[i] = symbol
+		klines[symbol] = []model.KlineDay{{
+			Symbol: symbol, Date: day, Open: 10, High: 11, Low: 9, Close: 10.5, Volume: 100,
+		}}
+	}
+	repo := &fakeCalcRepo{klines: klines}
+	path := filepath.Join(t.TempDir(), "basic.csv")
+
+	count, err := ExportBasicDailyToCSV(context.Background(), repo, path, BasicExportOptions{
+		FullRecalc: true,
+		Symbols:    symbols,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != len(symbols) {
+		t.Fatalf("count = %d, want %d", count, len(symbols))
+	}
+	if len(repo.klineBatchCalls) != 2 {
+		t.Fatalf("batch calls = %d, want 2", len(repo.klineBatchCalls))
+	}
+	if len(repo.klineBatchCalls[0]) != calcQueryBatchSize || len(repo.klineBatchCalls[1]) != 1 {
+		t.Fatalf("batch sizes = [%d, %d], want [%d, 1]",
+			len(repo.klineBatchCalls[0]), len(repo.klineBatchCalls[1]), calcQueryBatchSize)
+	}
+	if len(repo.klineCalls) != 0 {
+		t.Fatalf("unexpected per-symbol kline calls: %v", repo.klineCalls)
+	}
+}
+
+func TestExportBasicDailyPrecomputesFactorCSV(t *testing.T) {
+	day := time.Date(2026, 1, 5, 0, 0, 0, 0, time.UTC)
+	repo := &fakeCalcRepo{
+		klines: map[string][]model.KlineDay{
+			"sh600000": {{Symbol: "sh600000", Date: day, Open: 10, High: 11, Low: 9, Close: 10.5, Volume: 100}},
+			"sz000001": {{Symbol: "sz000001", Date: day, Open: 20, High: 21, Low: 19, Close: 20.5, Volume: 200}},
+		},
+	}
+	dir := t.TempDir()
+	basicPath := filepath.Join(dir, "basic.csv")
+	factorPath := filepath.Join(dir, "factor.csv")
+
+	count, err := ExportBasicDailyToCSV(context.Background(), repo, basicPath, BasicExportOptions{
+		FullRecalc:    true,
+		Symbols:       []string{"sh600000", "sz000001"},
+		FactorCSVPath: factorPath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("count = %d, want 2", count)
+	}
+
+	factorRows := readCSVFile(t, factorPath)
+	if len(factorRows) != 3 {
+		t.Fatalf("factor csv rows = %d, want header + 2", len(factorRows))
+	}
+	for _, row := range factorRows[1:] {
+		if row[2] != "1" {
+			t.Fatalf("first factor = %s, want 1", row[2])
+		}
 	}
 }
 

@@ -31,6 +31,7 @@ type DataRepository interface {
 	Query(table string, conditions map[string]interface{}, dest interface{}) error
 	QueryRows(ctx context.Context, query string, dest interface{}) error
 	QueryKlineDaily(symbol string, startDate, endDate *time.Time) ([]model.KlineDay, error)
+	GetKlineDailyBySymbols(ctx context.Context, symbols []string) (map[string][]model.KlineDay, error)
 	GetLatestDate(tableName string, dateCol string) (time.Time, error)
 	GetLatestDates(tableName string, dateCol string) (map[string]time.Time, error)
 	GetMinDate(tableName string, dateCol string) (time.Time, error)
@@ -39,6 +40,7 @@ type DataRepository interface {
 	CountKlineDaily() (int64, error)
 
 	GetBasicsBySymbol(symbol string) ([]model.BasicDaily, error)
+	GetBasicsBySymbols(ctx context.Context, symbols []string) (map[string][]model.BasicDaily, error)
 	GetLatestBasics(classes ...string) (map[string]model.BasicDaily, error)
 	GetKlineDailyAfterLatestBasic(classes ...string) (map[string][]model.KlineDay, error)
 	GetLatestFactor(symbol string) (*model.Factor, error)

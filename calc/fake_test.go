@@ -1,6 +1,7 @@
 package calc
 
 import (
+	"context"
 	"slices"
 	"time"
 
@@ -18,6 +19,9 @@ type fakeCalcRepo struct {
 	latestFactors map[string]*model.Factor
 
 	fullBasicCalls         []string
+	klineCalls             []string
+	klineBatchCalls        [][]string
+	basicBatchCalls        [][]string
 	latestFactorBatches    int
 	incrementalBasicsBatch int
 	classCalls             [][]string
@@ -33,6 +37,7 @@ func (f *fakeCalcRepo) GetGbbq() ([]model.GbbqData, error) {
 }
 
 func (f *fakeCalcRepo) QueryKlineDaily(symbol string, startDate, endDate *time.Time) ([]model.KlineDay, error) {
+	f.klineCalls = append(f.klineCalls, symbol)
 	rows := f.klines[symbol]
 	if startDate == nil {
 		return rows, nil
@@ -46,9 +51,27 @@ func (f *fakeCalcRepo) QueryKlineDaily(symbol string, startDate, endDate *time.T
 	return result, nil
 }
 
+func (f *fakeCalcRepo) GetKlineDailyBySymbols(ctx context.Context, symbols []string) (map[string][]model.KlineDay, error) {
+	f.klineBatchCalls = append(f.klineBatchCalls, slices.Clone(symbols))
+	result := make(map[string][]model.KlineDay, len(symbols))
+	for _, symbol := range symbols {
+		result[symbol] = f.klines[symbol]
+	}
+	return result, nil
+}
+
 func (f *fakeCalcRepo) GetBasicsBySymbol(symbol string) ([]model.BasicDaily, error) {
 	f.fullBasicCalls = append(f.fullBasicCalls, symbol)
 	return f.basics[symbol], nil
+}
+
+func (f *fakeCalcRepo) GetBasicsBySymbols(ctx context.Context, symbols []string) (map[string][]model.BasicDaily, error) {
+	f.basicBatchCalls = append(f.basicBatchCalls, slices.Clone(symbols))
+	result := make(map[string][]model.BasicDaily, len(symbols))
+	for _, symbol := range symbols {
+		result[symbol] = f.basics[symbol]
+	}
+	return result, nil
 }
 
 func (f *fakeCalcRepo) GetLatestBasics(classes ...string) (map[string]model.BasicDaily, error) {

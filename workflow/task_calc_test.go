@@ -1,6 +1,8 @@
 package workflow
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -64,5 +66,22 @@ func TestSelectBasicSymbolsFullRecalcIncludesEligibleOnly(t *testing.T) {
 	want := []string{"sh000001", "sh600000"}
 	if !reflect.DeepEqual(symbols, want) {
 		t.Fatalf("selectBasicSymbols() = %v, want %v", symbols, want)
+	}
+}
+
+func TestCanUsePrecomputedFactors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "factor.csv")
+	if err := os.WriteFile(path, []byte("symbol,date,hfq_factor\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !canUsePrecomputedFactors(path, 2, []string{"sh600000", "sz000001"}, []string{"sz000001", "sh600000"}) {
+		t.Fatal("expected matching symbol sets to use precomputed factors")
+	}
+	if canUsePrecomputedFactors(path, 2, []string{"sh600000"}, []string{"sh600000", "sz000001"}) {
+		t.Fatal("partial symbol coverage must not use precomputed factors")
+	}
+	if canUsePrecomputedFactors(filepath.Join(t.TempDir(), "missing.csv"), 2, []string{"sh600000"}, []string{"sh600000"}) {
+		t.Fatal("missing csv must not use precomputed factors")
 	}
 }

@@ -136,6 +136,29 @@ func (d *ClickHouseDriver) QueryKlineDaily(symbol string, startDate, endDate *ti
 	return results, nil
 }
 
+func (d *ClickHouseDriver) GetKlineDailyBySymbols(ctx context.Context, symbols []string) (map[string][]model.KlineDay, error) {
+	if len(symbols) == 0 {
+		return map[string][]model.KlineDay{}, nil
+	}
+
+	placeholders, args := classQueryArgs(symbols)
+	query := fmt.Sprintf(
+		`SELECT * FROM %s WHERE symbol IN (%s) ORDER BY symbol, date`,
+		model.TableKlineDaily.TableName, placeholders,
+	)
+
+	var rows []model.KlineDay
+	if err := d.db.SelectContext(ctx, &rows, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to query kline daily by symbols: %w", err)
+	}
+
+	result := make(map[string][]model.KlineDay, len(symbols))
+	for _, row := range rows {
+		result[row.Symbol] = append(result[row.Symbol], row)
+	}
+	return result, nil
+}
+
 func (d *ClickHouseDriver) GetBasicsBySymbol(symbol string) ([]model.BasicDaily, error) {
 	query := fmt.Sprintf(
 		"SELECT * FROM %s WHERE symbol = ? ORDER BY date",
@@ -148,6 +171,29 @@ func (d *ClickHouseDriver) GetBasicsBySymbol(symbol string) ([]model.BasicDaily,
 	}
 
 	return results, nil
+}
+
+func (d *ClickHouseDriver) GetBasicsBySymbols(ctx context.Context, symbols []string) (map[string][]model.BasicDaily, error) {
+	if len(symbols) == 0 {
+		return map[string][]model.BasicDaily{}, nil
+	}
+
+	placeholders, args := classQueryArgs(symbols)
+	query := fmt.Sprintf(
+		`SELECT * FROM %s WHERE symbol IN (%s) ORDER BY symbol, date`,
+		model.TableBasicDaily.TableName, placeholders,
+	)
+
+	var rows []model.BasicDaily
+	if err := d.db.SelectContext(ctx, &rows, query, args...); err != nil {
+		return nil, fmt.Errorf("failed to query basics by symbols: %w", err)
+	}
+
+	result := make(map[string][]model.BasicDaily, len(symbols))
+	for _, row := range rows {
+		result[row.Symbol] = append(result[row.Symbol], row)
+	}
+	return result, nil
 }
 
 func (d *ClickHouseDriver) GetLatestBasics(classes ...string) (map[string]model.BasicDaily, error) {

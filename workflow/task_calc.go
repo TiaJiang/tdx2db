@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"time"
@@ -15,6 +16,12 @@ import (
 var (
 	TaskCalcBasic  *Task
 	TaskCalcFactor *Task
+)
+
+const (
+	ExtraPrecomputedFactorCSV     = "precomputed_factor_csv"
+	ExtraPrecomputedFactorRows    = "precomputed_factor_rows"
+	ExtraPrecomputedFactorSymbols = "precomputed_factor_symbols"
 )
 
 func init() {
@@ -60,7 +67,18 @@ func executeCalcBasic(ctx context.Context, db database.DataRepository, args *Tas
 		return &TaskResult{State: StateSkipped, Message: "basic data is current"}, nil
 	}
 
+	precomputeFactors := fullRecalc || len(basicLatest) == 0
+	if args.Extra != nil {
+		delete(args.Extra, ExtraPrecomputedFactorCSV)
+		delete(args.Extra, ExtraPrecomputedFactorRows)
+		delete(args.Extra, ExtraPrecomputedFactorSymbols)
+	}
+
 	basicCSV := filepath.Join(args.TempDir, "basics.csv")
+	factorCSV := ""
+	if precomputeFactors {
+		factorCSV = filepath.Join(args.TempDir, "factors-from-basic.csv")
+	}
 	rebuildSymbols := intersectSymbols(symbols, changedSymbols)
 	if fullRecalc {
 		rebuildSymbols = nil
@@ -70,6 +88,7 @@ func executeCalcBasic(ctx context.Context, db database.DataRepository, args *Tas
 		FullRecalc:     fullRecalc,
 		Symbols:        symbols,
 		RebuildSymbols: rebuildSymbols,
+		FactorCSVPath:  factorCSV,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to export basic to csv: %w", err)
@@ -87,6 +106,15 @@ func executeCalcBasic(ctx context.Context, db database.DataRepository, args *Tas
 	}
 	if err := db.ImportBasic(basicCSV, rebuildSymbols); err != nil {
 		return nil, fmt.Errorf("failed to import basic data: %w", err)
+	}
+	if precomputeFactors {
+		if args.Extra == nil {
+			args.Extra = map[string]interface{}{}
+		}
+		args.Extra[ExtraPrecomputedFactorCSV] = factorCSV
+		args.Extra[ExtraPrecomputedFactorRows] = rowCount
+		args.Extra[ExtraPrecomputedFactorSymbols] = symbols
+		fmt.Printf("factor precomputed from basic (symbols=%d, rows=%d)\n", len(symbols), rowCount)
 	}
 	fmt.Printf("🔢 基础行情导入成功 (symbols=%d, rows=%d, rebuild=%d, full=%t)\n",
 		len(symbols), rowCount, len(rebuildSymbols), fullRecalc)
@@ -131,9 +159,25 @@ func executeCalcFactor(ctx context.Context, db database.DataRepository, args *Ta
 		Symbols:        symbols,
 		RebuildSymbols: rebuildSymbols,
 	}
-	factorCount, err := calc.ExportFactorsToCSV(ctx, db, factorCSV, opts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to export factor to csv: %w", err)
+	precomputedCSV, _ := args.Extra[ExtraPrecomputedFactorCSV].(string)
+	precomputedRows, _ := args.Extra[ExtraPrecomputedFactorRows].(int)
+	precomputedSymbols, _ := args.Extra[ExtraPrecomputedFactorSymbols].([]string)
+	usePrecomputed := canUsePrecomputedFactors(
+		precomputedCSV, precomputedRows, precomputedSymbols, symbols,
+	)
+
+	factorCount := 0
+	importCSV := factorCSV
+	if usePrecomputed {
+		factorCount = precomputedRows
+		importCSV = precomputedCSV
+		fmt.Printf("using factor csv precomputed by calc_basic (symbols=%d, rows=%d)\n",
+			len(symbols), factorCount)
+	} else {
+		factorCount, err = calc.ExportFactorsToCSV(ctx, db, factorCSV, opts)
+		if err != nil {
+			return nil, fmt.Errorf("failed to export factor to csv: %w", err)
+		}
 	}
 
 	if factorCount == 0 {
@@ -147,7 +191,7 @@ func executeCalcFactor(ctx context.Context, db database.DataRepository, args *Ta
 		}
 		rebuildSymbols = nil
 	}
-	if err := db.ImportAdjustFactors(factorCSV, rebuildSymbols); err != nil {
+	if err := db.ImportAdjustFactors(importCSV, rebuildSymbols); err != nil {
 		return nil, fmt.Errorf("failed to append factor data: %w", err)
 	}
 	fmt.Printf("🔢 复权因子导入成功 (symbols=%d, rows=%d, rebuild=%d, full=%t)\n",
@@ -158,6 +202,26 @@ func executeCalcFactor(ctx context.Context, db database.DataRepository, args *Ta
 		Message: fmt.Sprintf("factors calculated (symbols=%d, rows=%d, rebuild=%d, full=%t)",
 			len(symbols), factorCount, len(rebuildSymbols), fullRecalc),
 	}, nil
+}
+
+func canUsePrecomputedFactors(csvPath string, rows int, covered, wanted []string) bool {
+	if csvPath == "" || rows <= 0 || len(covered) != len(wanted) {
+		return false
+	}
+	if _, err := os.Stat(csvPath); err != nil {
+		return false
+	}
+
+	coveredSet := make(map[string]struct{}, len(covered))
+	for _, symbol := range covered {
+		coveredSet[symbol] = struct{}{}
+	}
+	for _, symbol := range wanted {
+		if _, ok := coveredSet[symbol]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func selectFactorSymbols(

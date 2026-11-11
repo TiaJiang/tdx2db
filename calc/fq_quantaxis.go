@@ -70,34 +70,73 @@ func ExportFactorsToCSV(
 		rebuildSet[symbol] = struct{}{}
 	}
 
-	pipeline := utils.NewPipeline[string, model.Factor]()
+	fullSymbols := make([]string, 0, len(symbols))
+	incrementalSymbols := make([]string, 0, len(symbols))
+	for _, symbol := range symbols {
+		_, rebuild := rebuildSet[symbol]
+		_, hasLatest := fctx.LatestFactors[symbol]
+		if opts.FullRecalc || rebuild || !hasLatest {
+			fullSymbols = append(fullSymbols, symbol)
+		} else {
+			incrementalSymbols = append(incrementalSymbols, symbol)
+		}
+	}
 
-	result, err := pipeline.Run(
-		ctx,
-		symbols,
-		func(ctx context.Context, symbol string) ([]model.Factor, error) {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			default:
+	rowCount := 0
+	for start := 0; start < len(fullSymbols); start += calcQueryBatchSize {
+		end := start + calcQueryBatchSize
+		if end > len(fullSymbols) {
+			end = len(fullSymbols)
+		}
+		batch := fullSymbols[start:end]
+		basicsBySymbol, err := db.GetBasicsBySymbols(ctx, batch)
+		if err != nil {
+			return 0, fmt.Errorf("failed to query basics batch: %w", err)
+		}
+
+		for _, symbol := range batch {
+			factors := calculateFullHfq(basicsBySymbol[symbol])
+			if len(factors) == 0 {
+				continue
 			}
-			_, rebuild := rebuildSet[symbol]
-			return processFactorSymbol(fctx, symbol, opts.FullRecalc || rebuild)
-		},
-		func(rows []model.Factor) error {
-			return cw.Write(rows)
-		},
-	)
-
-	if err != nil {
-		return 0, err
+			if err := cw.Write(factors); err != nil {
+				return 0, err
+			}
+			rowCount += len(factors)
+		}
+		fmt.Printf("factor full batch %d/%d symbols=%d rows=%d\n",
+			start/calcQueryBatchSize+1, (len(fullSymbols)+calcQueryBatchSize-1)/calcQueryBatchSize,
+			len(batch), rowCount)
 	}
 
-	if result.HasErrors() {
-		return 0, fmt.Errorf("export completed with %s", result.ErrorSummary())
+	if len(incrementalSymbols) > 0 {
+		pipeline := utils.NewPipeline[string, model.Factor]()
+		result, err := pipeline.Run(
+			ctx,
+			incrementalSymbols,
+			func(ctx context.Context, symbol string) ([]model.Factor, error) {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				default:
+				}
+				return processFactorSymbol(fctx, symbol, false)
+			},
+			func(rows []model.Factor) error {
+				return cw.Write(rows)
+			},
+		)
+		if err != nil {
+			return 0, err
+		}
+
+		if result.HasErrors() {
+			return 0, fmt.Errorf("export completed with %s", result.ErrorSummary())
+		}
+		rowCount += int(result.OutputRows)
 	}
 
-	return int(result.OutputRows), nil
+	return rowCount, nil
 }
 
 func processFactorSymbol(fctx *FactorContext, symbol string, fullRecalc bool) ([]model.Factor, error) {

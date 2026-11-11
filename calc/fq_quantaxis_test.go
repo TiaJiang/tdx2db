@@ -2,6 +2,7 @@ package calc
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"path/filepath"
 	"reflect"
@@ -161,8 +162,11 @@ func TestExportFactorsSelectiveRebuild(t *testing.T) {
 	if counts["sz000001"] != 1 {
 		t.Fatalf("sz000001 rows = %d, want incremental 1", counts["sz000001"])
 	}
-	if !reflect.DeepEqual(repo.fullBasicCalls, []string{"sh600000"}) {
-		t.Fatalf("full basic calls = %v, want [sh600000]", repo.fullBasicCalls)
+	if len(repo.fullBasicCalls) != 0 {
+		t.Fatalf("unexpected per-symbol basic calls: %v", repo.fullBasicCalls)
+	}
+	if !reflect.DeepEqual(repo.basicBatchCalls, [][]string{{"sh600000"}}) {
+		t.Fatalf("basic batch calls = %v, want [[sh600000]]", repo.basicBatchCalls)
 	}
 	if repo.latestFactorBatches != 1 || repo.incrementalBasicsBatch != 1 {
 		t.Fatalf("batch calls = latest factors %d, incremental basics %d; want 1, 1",
@@ -171,5 +175,41 @@ func TestExportFactorsSelectiveRebuild(t *testing.T) {
 	wantClasses := []string{model.ClassStock, model.ClassETF, model.ClassBStock}
 	if len(repo.classCalls) != 1 || !reflect.DeepEqual(repo.classCalls[0], wantClasses) {
 		t.Fatalf("class calls = %v, want %v", repo.classCalls, wantClasses)
+	}
+}
+
+func TestExportFactorsFullUsesBatchedQueries(t *testing.T) {
+	day := date(2026, 1, 5)
+	symbols := make([]string, calcQueryBatchSize+1)
+	basics := make(map[string][]model.BasicDaily, len(symbols))
+	for i := range symbols {
+		symbol := fmt.Sprintf("sh%06d", i)
+		symbols[i] = symbol
+		basics[symbol] = []model.BasicDaily{{
+			Symbol: symbol, Date: day, Close: 10, PreClose: 10,
+		}}
+	}
+	repo := &fakeCalcRepo{basics: basics}
+	path := filepath.Join(t.TempDir(), "factor.csv")
+
+	count, err := ExportFactorsToCSV(context.Background(), repo, path, FactorExportOptions{
+		FullRecalc: true,
+		Symbols:    symbols,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != len(symbols) {
+		t.Fatalf("count = %d, want %d", count, len(symbols))
+	}
+	if len(repo.basicBatchCalls) != 2 {
+		t.Fatalf("batch calls = %d, want 2", len(repo.basicBatchCalls))
+	}
+	if len(repo.basicBatchCalls[0]) != calcQueryBatchSize || len(repo.basicBatchCalls[1]) != 1 {
+		t.Fatalf("batch sizes = [%d, %d], want [%d, 1]",
+			len(repo.basicBatchCalls[0]), len(repo.basicBatchCalls[1]), calcQueryBatchSize)
+	}
+	if len(repo.fullBasicCalls) != 0 {
+		t.Fatalf("unexpected per-symbol basic calls: %v", repo.fullBasicCalls)
 	}
 }

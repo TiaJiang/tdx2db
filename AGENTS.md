@@ -212,7 +212,7 @@ tdx2db cron --dburi 'clickhouse://localhost'
 tdx2db init --dburi 'clickhouse://localhost' --dayfiledir /path/to/vipdoc/
 
 # Online metadata runtime dependency (Python >= 3.10)
-python3 -m pip install "eltdx==3.3.5"  # Windows: python -m pip
+python3 -m pip install "eltdx>=3.3.5"  # Windows: python -m pip
 ```
 
 ## DEVELOPMENT VERIFICATION PIPELINE

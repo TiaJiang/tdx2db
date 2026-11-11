@@ -9,8 +9,8 @@ try:
     from eltdx.mac import BoardType, MacClient, PresetField, SortOrder, SortType
 except ImportError:
     print(
-        'eltdx is required: python3 -m pip install "eltdx==3.3.5" '
-        '(Windows: python -m pip install "eltdx==3.3.5")',
+        'eltdx is required: python3 -m pip install "eltdx>=3.3.5" '
+        '(Windows: python -m pip install "eltdx>=3.3.5")',
         file=sys.stderr,
     )
     raise SystemExit(1)

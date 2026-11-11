@@ -1,7 +1,3 @@
-<p align="center">
-<img src="./tdx2db.png" width="300"/>
-</p>
-
 # tdx2db - 获得专属的 A 股行情数据库
 
 [![GitHub release](https://img.shields.io/github/v/release/TiaJiang/tdx2db?style=flat-square)](https://github.com/TiaJiang/tdx2db/releases)

@@ -27,11 +27,7 @@ type boardCatalogResult struct {
 	Downloads int
 }
 
-func ensureOnlineBoardCatalog(ctx context.Context, cacheDir, tempDir, overrideDir string) (boardCatalogResult, error) {
-	if hasBoardCatalog(overrideDir) {
-		return boardCatalogResult{}, nil
-	}
-
+func ensureOnlineBoardCatalog(ctx context.Context, cacheDir, tempDir string) (boardCatalogResult, error) {
 	result := boardCatalogResult{}
 	cacheReady := hasBoardCatalog(cacheDir)
 	metadata := readBoardCacheMetadata(cacheDir)
@@ -268,7 +264,6 @@ func installBoardCatalog(
 func prepareStaticBoardDir(
 	tempDir string,
 	cacheDir string,
-	overrideDir string,
 	syncedFiles map[string]boardFileSync,
 ) (string, *boardFileSync, error) {
 	if tempDir == "" {
@@ -289,11 +284,6 @@ func prepareStaticBoardDir(
 		return copyBoardConfig(source, filepath.Join(dir, name))
 	}
 	pickFile := func(name string) string {
-		if path := filepath.Join(overrideDir, name); overrideDir != "" {
-			if info, err := os.Stat(path); err == nil && !info.IsDir() {
-				return path
-			}
-		}
 		path := filepath.Join(cacheDir, name)
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path
@@ -322,9 +312,6 @@ func prepareStaticBoardDir(
 		return "", nil, err
 	}
 
-	if _, err := copyFrom("base.dbf", pickFile("base.dbf")); err != nil {
-		return "", nil, err
-	}
 	return dir, tdxhySnapshot, nil
 }
 

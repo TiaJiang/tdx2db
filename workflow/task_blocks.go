@@ -36,9 +36,8 @@ func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *
 	}
 
 	result, err := tdx.FetchOnlineBlocks(ctx, tdx.BlockFetchOptions{
-		BoardDataDir: args.BoardDataDir,
-		TempDir:      args.TempDir,
-		IndexNames:   indexNames,
+		TempDir:    args.TempDir,
+		IndexNames: indexNames,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch block metadata: %w", err)
@@ -63,7 +62,7 @@ func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *
 		return nil, fmt.Errorf("no block metadata available; previous tables were left unchanged")
 	}
 	fmt.Printf(
-		"板块批量同步: block_meta=%d, file_download=%d, chunks=%d, catalog_check=%d, catalog_download=%d, index_names=%d, index_matched=%d, index_ambiguous=%d, index_unmatched=%d, f10_fallback=%d\n",
+		"板块批量同步: block_meta=%d, file_download=%d, chunks=%d, catalog_check=%d, catalog_download=%d, index_names=%d, index_matched=%d, index_aliases=%d, index_unmatched=%d, f10_fallback=%d\n",
 		result.Stats.MetaRequests,
 		result.Stats.FileDownloads,
 		result.Stats.ChunkRequests,
@@ -71,7 +70,7 @@ func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *
 		result.Stats.CatalogDownloads,
 		result.Stats.IndexNames,
 		result.Stats.IndexMatched,
-		result.Stats.IndexAmbiguous,
+		result.Stats.IndexAliases,
 		result.Stats.IndexUnmatched,
 		result.Stats.F10FallbackBlocks,
 	)
@@ -113,8 +112,8 @@ func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *
 	}
 
 	message := fmt.Sprintf(
-		"blocks imported: %d info rows, %d member rows, %d warnings, %d failed upstream blocks",
-		len(result.Blocks), len(result.Members), len(result.Warnings), len(result.FailedBlocks),
+		"blocks imported: %d info rows, %d member rows, %d warnings",
+		len(result.Blocks), len(result.Members), len(result.Warnings),
 	)
 	fmt.Println("板块数据导入成功")
 	return &TaskResult{

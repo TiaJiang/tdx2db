@@ -61,7 +61,7 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 | ClassifyCode | func | model/classify.go:58 | symbol → stock/index/etf/block/unknown |
 | PriceScale | func | model/classify.go:89 | TDX 原始整数价格换算 (股票=100, ETF/B股=1000, 可转债=10000) |
 | SchemaFromStruct | func | model/tables.go:54 | Reflect-based table registration |
-| FetchOnlineBlocks | func | tdx/block.go | 合并静态板块目录、F10 板块/指数成分并保留失败板块旧数据 |
+| FetchOnlineBlocks | func | tdx/block.go | 合并静态板块目录与 infoharbor 指数成分，按名称展开同码别名并保留旧数据 |
 | FetchOnlineSymbolNames | func | tdx/stock.go:22 | 通过 eltdx 拉取沪深京在线代码名称 |
 
 ## CONVENTIONS
@@ -87,10 +87,10 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 
 **Online eltdx data:**
 - `tdx/eltdx.go` runs the embedded `tdx/eltdx_online.py` bridge and decodes its JSON output
-- `tdx/eltdx_online.py` uses `TdxClient.codes.all_markets()` for online code names and `F10Client` for board/index members; no MAC dependency or fallback
-- `tdx/board_static.go` parses configurable `tdxzs.cfg` / `tdxzs3.cfg` / `tdxhy.cfg` for catalog, 880/881 hierarchy and 880/881 industry members
-- `tdx/block.go` merges static catalog data with F10 members, normalizes market prefixes, deduplicates and preserves previous rows for unavailable blocks
-- `update_blocks` depends on `update_daily`, then replaces both block tables via `ImportBlockSnapshot`; `TDX2DB_BOARD_DATA_DIR` or `--board-data-dir` provides the static directory
+- `tdx/eltdx_online.py` uses `TdxClient` for online code names and `tdxhy.cfg` sync; index members come from `infoharbor_block.dat`, with no F10 or MAC dependency
+- `tdx/board_static.go` parses cached `tdxzs.cfg` / `tdxzs3.cfg` / `tdxhy.cfg` for catalog, 880/881 hierarchy and 880/881 industry members; `tdxzs.cfg` category 3 is ignored
+- `tdx/block.go` merges cached catalog data with `infoharbor_block.dat`, expands same-name index aliases to every matching market code, deduplicates and preserves previous rows for unavailable blocks
+- `update_blocks` depends on `update_daily`, then replaces both block tables via `ImportBlockSnapshot`; catalog files come only from online `gbbq.zip` and `TDX2DB_BOARD_CACHE_DIR`
 
 **Symbol classification (model/classify.go):**
 - `ClassifyCode(symbol) → stock/index/etf/block/unknown`
@@ -335,7 +335,7 @@ critical 必须为零；历史 OHLC warning 可以存在，但必须在最终结
 - ETF 拆分日 (cat=11) PreClose 必须除以 Splitc3，否则当天涨跌幅会异常
 - `raw_symbol_class` is rebuilt from `raw_kline_daily` on each daily import — adding classification rules retroactively will auto-classify on next import
 - `raw_symbol_name` comes from online quote-server code-name data and is separate from `raw_symbol_class`; class is stored from the online list but basic/factor still use `raw_symbol_class`
-- `raw_tdx_blocks_info` / `raw_tdx_blocks_member` come from F10 + static TDX board files and are not part of basic/factor calculation
+- `raw_tdx_blocks_info` / `raw_tdx_blocks_member` come from static TDX board files and `infoharbor_block.dat`, not F10, and are not part of basic/factor calculation
 - ClickHouse 的板块快照逐表替换，不是跨表事务；DuckDB 的 `ImportBlockSnapshot` 是单事务
 - online metadata requires Python >= 3.10 with `eltdx` installed; `TDX2DB_PYTHON` can point to a specific interpreter
 - holidays 来自 gbbq.zip 内嵌的 zhb.zip (needini.dat)，不再依赖 tdxhome 安装目录

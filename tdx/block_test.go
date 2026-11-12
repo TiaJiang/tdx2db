@@ -1,76 +1,20 @@
 package tdx
 
 import (
-	"context"
-	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jing2uo/tdx2db/model"
 )
 
-func TestDecodeF10BlocksFixture(t *testing.T) {
-	data, err := os.ReadFile("testdata/f10_blocks.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	response, err := decodeOnlineBlocks(context.Background(), data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Blocks) != 1 {
-		t.Fatalf("blocks = %d, want 1: %+v", len(response.Blocks), response.Blocks)
-	}
-	if response.Blocks[0].BlockCode != "sh000300" ||
-		response.Blocks[0].BlockType != blockTypeIndex {
-		t.Fatalf("unexpected block: %+v", response.Blocks[0])
-	}
-	if len(response.Members) != 2 {
-		t.Fatalf("members = %d, want 2", len(response.Members))
-	}
-	if len(response.Warnings) != 1 || response.Warnings[0] != "sample warning" {
-		t.Fatalf("unexpected warnings: %+v", response.Warnings)
-	}
-	if len(response.FailedBlocks) != 1 || response.FailedBlocks[0] != "sh880522" {
-		t.Fatalf("unexpected failed blocks: %+v", response.FailedBlocks)
-	}
-}
-
-func TestBuildF10BlockRequest(t *testing.T) {
-	request := buildF10BlockRequest([]model.BlockInfo{
-		{BlockType: blockTypeIndustry, BlockCode: "sh880301", BlockName: "煤炭"},
-		{BlockType: blockTypeIndustry, BlockCode: "sh881001", BlockName: "煤炭"},
-		{BlockType: blockTypeConcept, BlockCode: "sh880522", BlockName: "概念"},
-		{BlockType: blockTypeStyle, BlockCode: "sh880897", BlockName: "风格"},
-		{BlockType: blockTypeRegion, BlockCode: "sh880201", BlockName: "黑龙江"},
-	}, true)
-
-	if len(request.Themes) != 1 {
-		t.Fatalf("themes = %d, want 1: %+v", len(request.Themes), request.Themes)
-	}
-	if request.Themes[0].BlockCode != "sh880201" || request.Themes[0].BlockType != blockTypeRegion {
-		t.Fatalf("unexpected themes: %+v", request.Themes)
-	}
-}
-
-func TestBuildF10BlockRequestUsesEmptyArrays(t *testing.T) {
-	data, err := json.Marshal(buildF10BlockRequest(nil, false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != `{"themes":[],"indices":[]}` {
-		t.Fatalf("empty request = %s", data)
-	}
-}
-
-func TestBuildF10BlockRequestSkipsRegionsWhenLocalDBFExists(t *testing.T) {
-	request := buildF10BlockRequest([]model.BlockInfo{
-		{BlockType: blockTypeRegion, BlockCode: "sh880201", BlockName: "黑龙江"},
-		{BlockType: blockTypeConcept, BlockCode: "sh880522", BlockName: "概念"},
-	}, false)
-	if len(request.Themes) != 0 || len(request.Indices) != 0 {
-		t.Fatalf("unexpected F10 fallback: %+v", request)
+func TestEmbeddedBlockBridgeHasNoF10Calls(t *testing.T) {
+	for _, forbidden := range []string{
+		"F10Client", "fetch_blocks", "fetch_index_task", "call_with_retry",
+		"index_members", "theme_market", "theme_rows", "fetch_theme_task", "200744",
+	} {
+		if strings.Contains(eltdxOnlineScript, forbidden) {
+			t.Fatalf("embedded block bridge contains forbidden F10 reference %q", forbidden)
+		}
 	}
 }
 
@@ -87,10 +31,25 @@ func TestNormalizeMarketSymbol(t *testing.T) {
 		{market: "", code: "881001", want: "sh881001"},
 		{market: "", code: "000300", want: "sh000300"},
 		{market: "", code: "399006", want: "sz399006"},
+		{market: "", code: "399300", want: "sz399300"},
 	}
 	for _, tt := range tests {
 		if got := normalizeMarketSymbol(tt.market, tt.code); got != tt.want {
 			t.Errorf("normalizeMarketSymbol(%q, %q) = %q, want %q", tt.market, tt.code, got, tt.want)
+		}
+	}
+}
+
+func TestNormalizeBlockCodeHandlesIndexMarkets(t *testing.T) {
+	tests := map[string]string{
+		"000300":   "sh000300",
+		"399300":   "sz399300",
+		"sh000300": "sh000300",
+		"sz399300": "sz399300",
+	}
+	for code, want := range tests {
+		if got := normalizeBlockCode(code); got != want {
+			t.Errorf("normalizeBlockCode(%q) = %q, want %q", code, got, want)
 		}
 	}
 }
@@ -101,7 +60,6 @@ func TestApplyPreviousPreservesUnavailableBlocks(t *testing.T) {
 			{BlockType: blockTypeIndex, BlockName: "沪深300", BlockCode: "sh000300", BlockSymbol: "sh000300", BlockLevel: 1},
 		},
 		Members:             []model.BlockMember{{StockSymbol: "sh600000", BlockCode: "sh000300"}},
-		FailedBlocks:        []string{"sh880522"},
 		PreserveAllNonIndex: true,
 		Preserve880Members:  true,
 	}
@@ -121,16 +79,52 @@ func TestApplyPreviousPreservesUnavailableBlocks(t *testing.T) {
 	}
 }
 
-func TestApplyPreviousPreservesFailedIndex(t *testing.T) {
-	result := &BlockFetchResult{FailedBlocks: []string{"sh000300"}}
+func TestApplyPreviousPreservesEmptyUnlistedIndices(t *testing.T) {
+	result := &BlockFetchResult{PreserveUnlistedIndices: true}
 	result.ApplyPrevious(
 		[]model.BlockInfo{
+			{BlockType: blockTypeIndex, BlockName: "中证1000", BlockCode: "sh000852", BlockSymbol: "sh000852", BlockLevel: 1},
+			{BlockType: blockTypeIndex, BlockName: "中证1000", BlockCode: "sz399852", BlockSymbol: "sz399852", BlockLevel: 1},
+		},
+		[]model.BlockMember{
+			{StockSymbol: "sh600000", BlockCode: "sh000852"},
+			{StockSymbol: "sz000001", BlockCode: "sz399852"},
+		},
+	)
+	if len(result.Blocks) != 2 || len(result.Members) != 2 {
+		t.Fatalf("empty index was not preserved: blocks=%+v members=%+v", result.Blocks, result.Members)
+	}
+}
+
+func TestApplyPreviousDropsOldRegionBlocksAndMembers(t *testing.T) {
+	result := &BlockFetchResult{
+		Blocks: []model.BlockInfo{
 			{BlockType: blockTypeIndex, BlockName: "沪深300", BlockCode: "sh000300", BlockSymbol: "sh000300", BlockLevel: 1},
 		},
-		[]model.BlockMember{{StockSymbol: "sh600000", BlockCode: "sh000300"}},
-	)
-	if len(result.Blocks) != 1 || len(result.Members) != 1 {
-		t.Fatalf("failed index was not preserved: blocks=%+v members=%+v", result.Blocks, result.Members)
+		Members:             []model.BlockMember{{StockSymbol: "sh600000", BlockCode: "sh000300"}},
+		PreserveAllNonIndex: true,
+		Preserve880Members:  true,
+	}
+	result.ApplyPrevious([]model.BlockInfo{
+		{BlockType: "region", BlockName: "黑龙江", BlockCode: "sh880201", BlockSymbol: "sh880201", BlockLevel: 1},
+		{BlockType: blockTypeConcept, BlockName: "旧概念", BlockCode: "sh880522", BlockSymbol: "sh880522", BlockLevel: 1},
+	}, []model.BlockMember{
+		{StockSymbol: "sz000001", BlockCode: "sh880201"},
+		{StockSymbol: "sz000002", BlockCode: "sh880522"},
+	})
+
+	if len(result.Blocks) != 2 || len(result.Members) != 2 {
+		t.Fatalf("old region data was preserved: blocks=%+v members=%+v", result.Blocks, result.Members)
+	}
+	for _, info := range result.Blocks {
+		if info.BlockCode == "sh880201" {
+			t.Fatalf("old region block remains: %+v", info)
+		}
+	}
+	for _, member := range result.Members {
+		if member.BlockCode == "sh880201" {
+			t.Fatalf("old region member remains: %+v", member)
+		}
 	}
 }
 

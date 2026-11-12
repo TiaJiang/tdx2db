@@ -43,7 +43,7 @@ python -m pip install "eltdx>=3.3.5"
 
 板块元数据默认全部在线获取，不需要安装通达信客户端。`tdxhy.cfg` 由 eltdx 下载，`tdxzs.cfg` / `tdxzs3.cfg` 从 TDX `gbbq.zip` 内嵌的 `zhb.zip` 提取。缓存默认位于 `os.UserCacheDir()/tdx2db/board-cache`，可用 `TDX2DB_BOARD_CACHE_DIR` 覆盖。
 
-如果本地已有通达信 `T0002/hq_cache`，仍可通过 `--board-data-dir` 或 `TDX2DB_BOARD_DATA_DIR` 临时覆盖在线目录；不是必需配置。
+概念 / 风格 / 指数成员来自 `infoharbor_block.dat`，880/881 行业成员来自 `tdxhy.cfg`；同名多代码指数按名称别名展开，成分同时写入各市场代码，不调用 F10。
 
 ## 使用
 
@@ -81,9 +81,6 @@ tdx2db init --dburi 'clickhouse://localhost' --dayfiledir ./vipdoc
 
 ```bash
 tdx2db cron --dburi 'duckdb://tdx.db'
-
-# 可选：用本地通达信 hq_cache 覆盖在线目录
-tdx2db cron --dburi 'duckdb://tdx.db' --board-data-dir /path/to/T0002/hq_cache
 
 # 加 --min 才会下载并导入 1 分钟分时
 tdx2db cron --dburi 'duckdb://tdx.db' --min

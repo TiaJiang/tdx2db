@@ -2,7 +2,6 @@ package tdx
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +18,6 @@ const (
 	blockTypeIndustry = "industry"
 	blockTypeConcept  = "concept"
 	blockTypeStyle    = "style"
-	blockTypeRegion   = "region"
 	blockTypeIndex    = "index"
 )
 
@@ -36,8 +34,6 @@ type staticBoardData struct {
 	PreserveAllNonIndex bool
 	Preserve881         bool
 	Preserve880Members  bool
-	RegionFallback      bool
-	PreserveRegion      bool
 }
 
 func loadStaticBoardData(ctx context.Context, dir string) (*staticBoardData, error) {
@@ -46,7 +42,7 @@ func loadStaticBoardData(ctx context.Context, dir string) (*staticBoardData, err
 		result.PreserveAllNonIndex = true
 		result.Preserve881 = true
 		result.Warnings = append(result.Warnings,
-			"board-data-dir 未配置，保留旧的非指数板块；F10 仅更新数据库已有指数")
+			"在线板块目录未配置，保留旧的非指数板块")
 		return result, nil
 	}
 
@@ -56,7 +52,7 @@ func loadStaticBoardData(ctx context.Context, dir string) (*staticBoardData, err
 			result.PreserveAllNonIndex = true
 			result.Preserve881 = true
 			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("board-data-dir 不存在: %s；保留旧的非指数板块", dir))
+				fmt.Sprintf("在线板块目录不存在: %s；保留旧的非指数板块", dir))
 			return result, nil
 		}
 		return nil, fmt.Errorf("failed to stat board data dir %s: %w", dir, err)
@@ -108,23 +104,6 @@ func loadStaticBoardData(ctx context.Context, dir string) (*staticBoardData, err
 		result.Preserve880Members = true
 		result.Warnings = append(result.Warnings,
 			fmt.Sprintf("缺少 %s；保留旧的 880 行业成分", tdxhyPath))
-	}
-
-	baseDBFPath := filepath.Join(dir, "base.dbf")
-	regionMembers, found, warnings, err := parseRegionDBF(ctx, baseDBFPath, allDefinitions)
-	if err != nil {
-		result.PreserveRegion = true
-		result.Warnings = append(result.Warnings,
-			fmt.Sprintf("解析 %s 失败，保留旧地区成分: %v", baseDBFPath, err))
-	} else {
-		result.Warnings = append(result.Warnings, warnings...)
-		if found {
-			result.Members = append(result.Members, regionMembers...)
-		} else {
-			result.RegionFallback = true
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("缺少 %s；地区板块将使用 F10 兜底", baseDBFPath))
-		}
 	}
 
 	return result, nil
@@ -190,8 +169,6 @@ func staticBlockType(category int) (string, bool) {
 	switch category {
 	case 2, 12:
 		return blockTypeIndustry, true
-	case 3:
-		return blockTypeRegion, true
 	case 4:
 		return blockTypeConcept, true
 	case 5:
@@ -350,97 +327,6 @@ func parseTDXHY(ctx context.Context, path string, definitions []boardDefinition)
 	return members, true, warnings, nil
 }
 
-func parseRegionDBF(ctx context.Context, path string, definitions []boardDefinition) ([]model.BlockMember, bool, []string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil, nil
-		}
-		return nil, false, nil, fmt.Errorf("failed to read %s: %w", path, err)
-	}
-	if len(data) < 32 {
-		return nil, true, nil, fmt.Errorf("DBF header is incomplete")
-	}
-
-	count := int(binary.LittleEndian.Uint32(data[4:8]))
-	headerSize := int(binary.LittleEndian.Uint16(data[8:10]))
-	recordSize := int(binary.LittleEndian.Uint16(data[10:12]))
-	if headerSize < 33 || recordSize < 1 || headerSize > len(data) {
-		return nil, true, nil, fmt.Errorf("invalid DBF header size=%d record size=%d", headerSize, recordSize)
-	}
-	if headerSize+count*recordSize > len(data) {
-		return nil, true, nil, fmt.Errorf("DBF records are truncated")
-	}
-
-	regionCodes := make(map[string]string)
-	for _, definition := range definitions {
-		if definition.Info.BlockType != blockTypeRegion {
-			continue
-		}
-		key := strings.TrimSpace(definition.IndustryCode)
-		if key != "" {
-			regionCodes[key] = definition.Info.BlockCode
-		}
-	}
-	if len(regionCodes) == 0 {
-		return nil, true, []string{"base.dbf 未匹配到地区板块定义"}, nil
-	}
-
-	fields := make(map[string]struct {
-		offset int
-		size   int
-	})
-	offset := 1
-	for pos := 32; pos+32 <= headerSize-1; pos += 32 {
-		if data[pos] == 0x0d {
-			break
-		}
-		name := strings.TrimRight(string(data[pos:pos+11]), "\x00")
-		size := int(data[pos+16])
-		fields[name] = struct {
-			offset int
-			size   int
-		}{offset: offset, size: size}
-		offset += size
-	}
-	fieldValue := func(record []byte, name string) string {
-		field, ok := fields[name]
-		if !ok || field.offset+field.size > len(record) {
-			return ""
-		}
-		return strings.TrimSpace(string(record[field.offset : field.offset+field.size]))
-	}
-
-	memberSet := make(map[string]model.BlockMember)
-	for index := 0; index < count; index++ {
-		if index%1000 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, true, nil, err
-			}
-		}
-		start := headerSize + index*recordSize
-		record := data[start : start+recordSize]
-		if len(record) == 0 || record[0] == '*' {
-			continue
-		}
-		blockCode := regionCodes[fieldValue(record, "DY")]
-		code := fieldValue(record, "GPDM")
-		symbol := normalizeMarketSymbol(fieldValue(record, "SC"), code)
-		if blockCode == "" || symbol == "" {
-			continue
-		}
-		member := model.BlockMember{StockSymbol: symbol, BlockCode: blockCode}
-		memberSet[symbol+"\x00"+blockCode] = member
-	}
-
-	members := make([]model.BlockMember, 0, len(memberSet))
-	for _, member := range memberSet {
-		members = append(members, member)
-	}
-	sortBlockMembers(members)
-	return members, true, nil, nil
-}
-
 func readBoardConfig(path string) (string, bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -491,6 +377,9 @@ func normalizeBlockCode(code string) string {
 	}
 	if len(code) != 6 {
 		return code
+	}
+	if strings.HasPrefix(code, "399") {
+		return "sz" + code
 	}
 	return "sh" + code
 }

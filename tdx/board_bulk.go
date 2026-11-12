@@ -2,7 +2,6 @@ package tdx
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -19,14 +18,10 @@ import (
 const (
 	boardCacheMetadataName = ".tdx2db-board-cache.json"
 	infoHarborBlockFile    = "infoharbor_block.dat"
-	indexBlockFile         = "block_zs.dat"
 	industryMappingFile    = "tdxhy.cfg"
 )
 
-var (
-	infoHarborMemberPattern = regexp.MustCompile(`([012])#(\d{6})`)
-	blockZSNameDecoder      = simplifiedchinese.GBK.NewDecoder()
-)
+var infoHarborMemberPattern = regexp.MustCompile(`([012])#(\d{6})`)
 
 type boardSyncTask struct {
 	CacheDir string   `json:"cache_dir"`
@@ -59,18 +54,17 @@ type boardBulkStats struct {
 	CatalogDownloads  int
 	IndexNames        int
 	IndexMatched      int
-	IndexAmbiguous    int
+	IndexAliases      int
 	IndexUnmatched    int
 	F10FallbackBlocks int
 }
 
 type indexBlockParseResult struct {
 	Response           decodedBlockResponse
-	FallbackIndices    []f10BlockTask
 	MappingUnavailable bool
 	IndexNames         int
 	IndexMatched       int
-	IndexAmbiguous     int
+	IndexAliases       int
 	IndexUnmatched     int
 	PreserveAllIndices bool
 }
@@ -399,7 +393,6 @@ func parseInfoHarborIndexes(ctx context.Context, path string, names []model.Symb
 	result := indexBlockParseResult{}
 	infos := make(map[string]model.BlockInfo)
 	members := make(map[string]model.BlockMember)
-	fallbackSeen := make(map[string]bool)
 	var warnings []string
 	var current *currentIndex
 
@@ -425,44 +418,34 @@ func parseInfoHarborIndexes(ctx context.Context, path string, names []model.Symb
 			))
 			return
 		}
+		result.IndexMatched++
 		if len(candidates) > 1 {
-			result.IndexAmbiguous++
+			result.IndexAliases++
 			warnings = append(warnings, fmt.Sprintf(
-				"infoharbor_block.dat: %s 匹配到多个指数代码，回退 F10: %s",
+				"infoharbor_block.dat: %s 匹配到多个指数代码，按别名展开: %s",
 				current.name, strings.Join(candidates, ","),
 			))
-			for _, symbol := range candidates {
-				if !fallbackSeen[symbol] {
-					fallbackSeen[symbol] = true
-					result.FallbackIndices = append(result.FallbackIndices, f10BlockTask{
-						BlockCode: symbol,
-						BlockName: current.name,
-						BlockType: blockTypeIndex,
-					})
-				}
-			}
-			return
 		}
 
-		result.IndexMatched++
 		if len(current.members) == 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"infoharbor_block.dat: %s 没有成员，保留旧指数数据", current.name,
+				"infoharbor_block.dat: %s 没有成员，保留旧指数数据（如有）", current.name,
 			))
 			return
 		}
-		blockCode := candidates[0]
-		infos[blockCode] = model.BlockInfo{
-			BlockType:   blockTypeIndex,
-			BlockName:   current.name,
-			BlockSymbol: blockCode,
-			BlockCode:   blockCode,
-			BlockLevel:  1,
-		}
-		for symbol := range current.members {
-			members[symbol+"\x00"+blockCode] = model.BlockMember{
-				StockSymbol: symbol,
+		for _, blockCode := range candidates {
+			infos[blockCode] = model.BlockInfo{
+				BlockType:   blockTypeIndex,
+				BlockName:   current.name,
+				BlockSymbol: blockCode,
 				BlockCode:   blockCode,
+				BlockLevel:  1,
+			}
+			for symbol := range current.members {
+				members[symbol+"\x00"+blockCode] = model.BlockMember{
+					StockSymbol: symbol,
+					BlockCode:   blockCode,
+				}
 			}
 		}
 		if current.skipped > 0 {
@@ -534,143 +517,9 @@ func parseInfoHarborIndexes(ctx context.Context, path string, names []model.Symb
 	} else if result.IndexMatched == 0 {
 		result.MappingUnavailable = true
 		result.PreserveAllIndices = true
-		result.FallbackIndices = nil
 		warnings = append(warnings, "infoharbor_block.dat 指数名称映射整体不可用，保留旧指数数据")
 	}
 
-	sort.Slice(result.FallbackIndices, func(i, j int) bool {
-		return result.FallbackIndices[i].BlockCode < result.FallbackIndices[j].BlockCode
-	})
-	result.Response = decodedBlockResponse{
-		Blocks:   mapValuesSorted(infos),
-		Members:  mapMembersSorted(members),
-		Warnings: compactStrings(warnings),
-	}
-	return result, nil
-}
-
-func parseIndexBlocks(ctx context.Context, path string, names []model.SymbolName) (indexBlockParseResult, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return indexBlockParseResult{}, fmt.Errorf("failed to read %s: %w", path, err)
-	}
-	if len(data) < 386 {
-		return indexBlockParseResult{}, fmt.Errorf("%s is shorter than its header", path)
-	}
-	count := int(binary.LittleEndian.Uint16(data[384:386]))
-	const recordSize = 2813
-	if len(data) < 386+count*recordSize {
-		return indexBlockParseResult{}, fmt.Errorf(
-			"%s is truncated: want %d records, have %d bytes",
-			path, count, len(data)-386,
-		)
-	}
-
-	nameMap := buildIndexNameMap(names)
-	result := indexBlockParseResult{
-		IndexNames: len(nameMap),
-	}
-	infos := make(map[string]model.BlockInfo)
-	members := make(map[string]model.BlockMember)
-	fallbackSeen := make(map[string]bool)
-	var warnings []string
-
-	for index := 0; index < count; index++ {
-		if index%100 == 0 {
-			if err := ctx.Err(); err != nil {
-				return indexBlockParseResult{}, err
-			}
-		}
-		base := 386 + index*recordSize
-		nameBytes := data[base : base+9]
-		name, err := blockZSNameDecoder.Bytes(nameBytes)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("%s 第 %d 条名称解码失败", indexBlockFile, index+1))
-			continue
-		}
-		blockName := strings.TrimRight(string(name), "\x00 ")
-		if blockName == "" {
-			continue
-		}
-		if blockName == "精选指数" {
-			warnings = append(warnings, "block_zs.dat: 跳过精选指数板块")
-			continue
-		}
-		memberCount := int(binary.LittleEndian.Uint16(data[base+9 : base+11]))
-		if memberCount > 400 {
-			memberCount = 400
-		}
-		candidates := nameMap[blockName]
-		if len(candidates) == 0 {
-			result.IndexUnmatched++
-			warnings = append(warnings, fmt.Sprintf(
-				"block_zs.dat: %s 未匹配 raw_symbol_name 指数代码", blockName,
-			))
-			continue
-		}
-		if len(candidates) > 1 {
-			result.IndexAmbiguous++
-			warnings = append(warnings, fmt.Sprintf(
-				"block_zs.dat: %s 匹配到多个指数代码，回退 F10: %s",
-				blockName, strings.Join(candidates, ","),
-			))
-			for _, symbol := range candidates {
-				if !fallbackSeen[symbol] {
-					fallbackSeen[symbol] = true
-					result.FallbackIndices = append(result.FallbackIndices, f10BlockTask{
-						BlockCode: symbol,
-						BlockName: blockName,
-						BlockType: blockTypeIndex,
-					})
-				}
-			}
-			continue
-		}
-
-		blockCode := candidates[0]
-		result.IndexMatched++
-		infos[blockCode] = model.BlockInfo{
-			BlockType:   blockTypeIndex,
-			BlockName:   blockName,
-			BlockSymbol: blockCode,
-			BlockCode:   blockCode,
-			BlockLevel:  1,
-		}
-		skipped := 0
-		for offset := 0; offset < memberCount; offset++ {
-			start := base + 13 + offset*7
-			raw := strings.TrimRight(string(data[start:start+7]), "\x00 ")
-			stockSymbol, ok := stockSymbolFromIndexMember(raw)
-			if !ok {
-				skipped++
-				continue
-			}
-			members[stockSymbol+"\x00"+blockCode] = model.BlockMember{
-				StockSymbol: stockSymbol,
-				BlockCode:   blockCode,
-			}
-		}
-		if skipped > 0 {
-			warnings = append(warnings, fmt.Sprintf(
-				"block_zs.dat: %s 跳过 %d 个无法推断为股票的成员", blockName, skipped,
-			))
-		}
-	}
-
-	if result.IndexNames == 0 {
-		result.MappingUnavailable = true
-		result.PreserveAllIndices = true
-		warnings = append(warnings, "raw_symbol_name 中没有指数名称，保留旧指数数据")
-	} else if result.IndexMatched == 0 {
-		result.MappingUnavailable = true
-		result.PreserveAllIndices = true
-		result.FallbackIndices = nil
-		warnings = append(warnings, "block_zs.dat 指数名称映射整体不可用，保留旧指数数据")
-	}
-
-	sort.Slice(result.FallbackIndices, func(i, j int) bool {
-		return result.FallbackIndices[i].BlockCode < result.FallbackIndices[j].BlockCode
-	})
 	result.Response = decodedBlockResponse{
 		Blocks:   mapValuesSorted(infos),
 		Members:  mapMembersSorted(members),
@@ -711,7 +560,11 @@ func stockSymbolFromIndexMember(code string) (string, bool) {
 	if !isSixDigitCode(code) {
 		return "", false
 	}
-	return model.SymbolFromCode(code)
+	symbol, ok := model.SymbolFromCode(code)
+	if !ok {
+		return "", false
+	}
+	return symbol, true
 }
 
 func normalizeBulkBlockCode(code, market string) string {

@@ -2,7 +2,6 @@ package tdx
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,36 +11,13 @@ import (
 	"github.com/jing2uo/tdx2db/model"
 )
 
-type eltdxBlockInfo struct {
-	BlockType   string `json:"block_type"`
-	BlockName   string `json:"block_name"`
-	BlockSymbol string `json:"block_symbol"`
-	BlockCode   string `json:"block_code"`
-	ParentCode  string `json:"parent_code"`
-	BlockLevel  int    `json:"block_level"`
-}
-
-type eltdxBlockMember struct {
-	StockSymbol string `json:"stock_symbol"`
-	BlockCode   string `json:"block_code"`
-}
-
-type eltdxBlocksResponse struct {
-	Blocks       []eltdxBlockInfo   `json:"blocks"`
-	Members      []eltdxBlockMember `json:"members"`
-	Warnings     []string           `json:"warnings"`
-	FailedBlocks []string           `json:"failed_blocks"`
-}
-
 type decodedBlockResponse struct {
-	Blocks       []model.BlockInfo
-	Members      []model.BlockMember
-	Warnings     []string
-	FailedBlocks []string
+	Blocks   []model.BlockInfo
+	Members  []model.BlockMember
+	Warnings []string
 }
 
 type BlockFetchOptions struct {
-	BoardDataDir  string
 	BoardCacheDir string
 	TempDir       string
 	IndexNames    []model.SymbolName
@@ -51,26 +27,13 @@ type BlockFetchResult struct {
 	Blocks                  []model.BlockInfo
 	Members                 []model.BlockMember
 	Warnings                []string
-	FailedBlocks            []string
 	PreserveAllNonIndex     bool
 	Preserve881             bool
 	Preserve880Members      bool
 	PreserveConceptStyle    bool
 	PreserveAllIndices      bool
 	PreserveUnlistedIndices bool
-	PreserveRegionMembers   bool
 	Stats                   boardBulkStats
-}
-
-type f10BlockTask struct {
-	BlockCode string `json:"block_code"`
-	BlockName string `json:"block_name,omitempty"`
-	BlockType string `json:"block_type,omitempty"`
-}
-
-type f10BlockRequest struct {
-	Themes  []f10BlockTask `json:"themes"`
-	Indices []f10BlockTask `json:"indices"`
 }
 
 func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetchResult, error) {
@@ -79,7 +42,7 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 		return nil, err
 	}
 
-	catalogResult, catalogErr := ensureOnlineBoardCatalog(ctx, cacheDir, opts.TempDir, opts.BoardDataDir)
+	catalogResult, catalogErr := ensureOnlineBoardCatalog(ctx, cacheDir, opts.TempDir)
 
 	syncResponse, syncErr := syncBoardFiles(ctx, opts.TempDir, cacheDir)
 	if syncErr != nil {
@@ -91,7 +54,7 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 	}
 
 	staticDir, tdxhySnapshot, err := prepareStaticBoardDir(
-		opts.TempDir, cacheDir, opts.BoardDataDir, syncedFiles,
+		opts.TempDir, cacheDir, syncedFiles,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare static board data: %w", err)
@@ -115,11 +78,10 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 	}
 
 	result := &BlockFetchResult{
-		Warnings:              append([]string(nil), staticData.Warnings...),
-		PreserveAllNonIndex:   staticData.PreserveAllNonIndex,
-		Preserve881:           staticData.Preserve881,
-		Preserve880Members:    staticData.Preserve880Members,
-		PreserveRegionMembers: staticData.PreserveRegion,
+		Warnings:            append([]string(nil), staticData.Warnings...),
+		PreserveAllNonIndex: staticData.PreserveAllNonIndex,
+		Preserve881:         staticData.Preserve881,
+		Preserve880Members:  staticData.Preserve880Members,
 		Stats: boardBulkStats{
 			MetaRequests:     syncResponse.MetaRequests,
 			FileDownloads:    syncResponse.FileDownloads,
@@ -175,7 +137,7 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 				result.PreserveAllIndices = indexResponse.PreserveAllIndices
 				result.Stats.IndexNames = indexResponse.IndexNames
 				result.Stats.IndexMatched = indexResponse.IndexMatched
-				result.Stats.IndexAmbiguous = indexResponse.IndexAmbiguous
+				result.Stats.IndexAliases = indexResponse.IndexAliases
 				result.Stats.IndexUnmatched = indexResponse.IndexUnmatched
 			}
 		}
@@ -185,32 +147,20 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 		result.Warnings = append(result.Warnings, "在线板块包中缺少 infoharbor_block.dat")
 	}
 
-	request := buildF10BlockRequest(staticData.Blocks, staticData.RegionFallback)
-	request.Indices = append(request.Indices, indexResponse.FallbackIndices...)
 	if len(opts.IndexNames) == 0 && !result.PreserveAllIndices {
 		result.Warnings = append(result.Warnings,
 			"数据库中无可用指数标的，指数板块本次无目录可更新")
 	}
-	f10Response := decodedBlockResponse{}
-	if len(request.Themes) > 0 || len(request.Indices) > 0 {
-		f10Response, err = fetchF10Blocks(ctx, opts.TempDir, request)
-		if err != nil {
-			return nil, err
-		}
-	}
-	result.Stats.F10FallbackBlocks = len(request.Themes) + len(request.Indices)
 
 	result.Warnings = append(result.Warnings, infoHarborResponse.Warnings...)
 	result.Warnings = append(result.Warnings, indexResponse.Response.Warnings...)
-	result.Warnings = append(result.Warnings, f10Response.Warnings...)
 	result.Warnings = compactStrings(result.Warnings)
-	result.FailedBlocks = normalizeBlockCodes(f10Response.FailedBlocks)
 
-	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(infoHarborResponse.Blocks)+len(indexResponse.Response.Blocks)+len(f10Response.Blocks))
+	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(infoHarborResponse.Blocks)+len(indexResponse.Response.Blocks))
 	for _, info := range staticData.Blocks {
 		infos[info.BlockCode] = info
 	}
-	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, f10Response} {
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response} {
 		for _, info := range response.Blocks {
 			if info.BlockCode == "" {
 				continue
@@ -218,11 +168,11 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 			infos[info.BlockCode] = info
 		}
 	}
-	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(infoHarborResponse.Members)+len(indexResponse.Response.Members)+len(f10Response.Members))
+	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(infoHarborResponse.Members)+len(indexResponse.Response.Members))
 	for _, member := range staticData.Members {
 		memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 	}
-	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, f10Response} {
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response} {
 		for _, member := range response.Members {
 			if member.StockSymbol == "" || member.BlockCode == "" {
 				continue
@@ -244,172 +194,8 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 	return result, nil
 }
 
-func buildF10BlockRequest(blocks []model.BlockInfo, regionFallback bool) f10BlockRequest {
-	request := f10BlockRequest{
-		Themes:  make([]f10BlockTask, 0),
-		Indices: make([]f10BlockTask, 0),
-	}
-	if !regionFallback {
-		return request
-	}
-	themeSeen := make(map[string]bool)
-	for _, info := range blocks {
-		if info.BlockType != blockTypeRegion {
-			continue
-		}
-		if themeSeen[info.BlockCode] {
-			continue
-		}
-		themeSeen[info.BlockCode] = true
-		request.Themes = append(request.Themes, f10BlockTask{
-			BlockCode: info.BlockCode,
-			BlockName: info.BlockName,
-			BlockType: info.BlockType,
-		})
-	}
-
-	sort.Slice(request.Themes, func(i, j int) bool {
-		return request.Themes[i].BlockCode < request.Themes[j].BlockCode
-	})
-	return request
-}
-
-func fetchF10Blocks(ctx context.Context, tempDir string, request f10BlockRequest) (decodedBlockResponse, error) {
-	if tempDir == "" {
-		tempDir = os.TempDir()
-	}
-	file, err := os.CreateTemp(tempDir, "tdx-f10-blocks-*.json")
-	if err != nil {
-		return decodedBlockResponse{}, fmt.Errorf("failed to create F10 block task file: %w", err)
-	}
-	taskPath := file.Name()
-	defer os.Remove(taskPath)
-
-	if err := json.NewEncoder(file).Encode(request); err != nil {
-		file.Close()
-		return decodedBlockResponse{}, fmt.Errorf("failed to write F10 block task file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return decodedBlockResponse{}, fmt.Errorf("failed to close F10 block task file: %w", err)
-	}
-	if err := ctx.Err(); err != nil {
-		return decodedBlockResponse{}, err
-	}
-	data, err := runEltdx(ctx, "blocks", filepath.Clean(taskPath))
-	if err != nil {
-		return decodedBlockResponse{}, err
-	}
-	return decodeOnlineBlocks(ctx, data)
-}
-
-func decodeOnlineBlocks(ctx context.Context, data []byte) (decodedBlockResponse, error) {
-	var raw eltdxBlocksResponse
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return decodedBlockResponse{}, fmt.Errorf("decode eltdx blocks: %w", err)
-	}
-	response := decodedBlockResponse{
-		Warnings:     compactStrings(raw.Warnings),
-		FailedBlocks: normalizeBlockCodes(raw.FailedBlocks),
-	}
-	infoByCode := make(map[string]model.BlockInfo, len(raw.Blocks))
-	for i, item := range raw.Blocks {
-		if i%1000 == 0 {
-			if err := ctx.Err(); err != nil {
-				return decodedBlockResponse{}, err
-			}
-		}
-		info := normalizeBlockInfo(item)
-		if info.BlockCode != "" {
-			infoByCode[info.BlockCode] = info
-		}
-	}
-	memberSet := make(map[string]model.BlockMember, len(raw.Members))
-	for i, item := range raw.Members {
-		if i%1000 == 0 {
-			if err := ctx.Err(); err != nil {
-				return decodedBlockResponse{}, err
-			}
-		}
-		member := normalizeBlockMember(item)
-		if member.StockSymbol != "" && member.BlockCode != "" {
-			memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
-		}
-	}
-	for _, info := range infoByCode {
-		response.Blocks = append(response.Blocks, info)
-	}
-	for _, member := range memberSet {
-		response.Members = append(response.Members, member)
-	}
-	sortBlockInfos(response.Blocks)
-	sortBlockMembers(response.Members)
-	return response, nil
-}
-
-func normalizeBlockInfo(raw eltdxBlockInfo) model.BlockInfo {
-	info := model.BlockInfo{
-		BlockType:   strings.TrimSpace(raw.BlockType),
-		BlockName:   strings.TrimSpace(raw.BlockName),
-		BlockSymbol: normalizeBlockCode(raw.BlockSymbol),
-		BlockCode:   normalizeBlockCode(raw.BlockCode),
-		ParentCode:  normalizeBlockCode(raw.ParentCode),
-		BlockLevel:  raw.BlockLevel,
-	}
-	if info.BlockSymbol == "" {
-		info.BlockSymbol = info.BlockCode
-	}
-	if info.BlockLevel < 1 {
-		info.BlockLevel = 1
-	}
-	if !isBlockType(info.BlockType) {
-		return model.BlockInfo{}
-	}
-	if info.BlockCode == "" || info.BlockName == "" {
-		return model.BlockInfo{}
-	}
-	return info
-}
-
-func normalizeBlockMember(raw eltdxBlockMember) model.BlockMember {
-	return model.BlockMember{
-		StockSymbol: normalizeSymbolCode(raw.StockSymbol),
-		BlockCode:   normalizeBlockCode(raw.BlockCode),
-	}
-}
-
-func isBlockType(blockType string) bool {
-	switch blockType {
-	case blockTypeIndustry, blockTypeConcept, blockTypeStyle, blockTypeRegion, blockTypeIndex:
-		return true
-	default:
-		return false
-	}
-}
-
-func normalizeSymbolCode(code string) string {
-	code = strings.TrimSpace(strings.ToLower(code))
-	if strings.HasPrefix(code, "sh") || strings.HasPrefix(code, "sz") || strings.HasPrefix(code, "bj") {
-		return code
-	}
-	if symbol, ok := model.SymbolFromCode(code); ok {
-		return symbol
-	}
-	return normalizeMarketSymbol("", code)
-}
-
-func normalizeBlockCodes(codes []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(codes))
-	for _, code := range codes {
-		code = normalizeBlockCode(code)
-		if code == "" || seen[code] {
-			continue
-		}
-		seen[code] = true
-		result = append(result, code)
-	}
-	sort.Strings(result)
-	return result
+func isRemovedBlockType(blockType string) bool {
+	return blockType == "region"
 }
 
 func compactStrings(values []string) []string {
@@ -429,21 +215,22 @@ func compactStrings(values []string) []string {
 
 func (r *BlockFetchResult) ApplyPrevious(blocks []model.BlockInfo, members []model.BlockMember) {
 	newCodes := make(map[string]bool, len(r.Blocks))
+	includedCodes := make(map[string]bool, len(r.Blocks)+len(blocks))
 	for _, info := range r.Blocks {
 		newCodes[info.BlockCode] = true
-	}
-	failed := make(map[string]bool, len(r.FailedBlocks))
-	for _, code := range r.FailedBlocks {
-		failed[code] = true
+		includedCodes[info.BlockCode] = true
 	}
 	oldInfoByCode := make(map[string]model.BlockInfo, len(blocks))
 	for _, info := range blocks {
 		oldInfoByCode[info.BlockCode] = info
-		if newCodes[info.BlockCode] || (!failed[info.BlockCode] && !r.shouldPreserveInfo(info)) {
+		if isRemovedBlockType(info.BlockType) {
+			continue
+		}
+		if newCodes[info.BlockCode] || !r.shouldPreserveInfo(info) {
 			continue
 		}
 		r.Blocks = append(r.Blocks, info)
-		newCodes[info.BlockCode] = true
+		includedCodes[info.BlockCode] = true
 	}
 
 	memberSet := make(map[string]model.BlockMember, len(r.Members)+len(members))
@@ -452,9 +239,10 @@ func (r *BlockFetchResult) ApplyPrevious(blocks []model.BlockInfo, members []mod
 	}
 	for _, member := range members {
 		oldInfo := oldInfoByCode[member.BlockCode]
-		preserve := failed[member.BlockCode] ||
-			(r.PreserveConceptStyle && isConceptOrStyle(oldInfo)) ||
-			(r.PreserveRegionMembers && oldInfo.BlockType == blockTypeRegion) ||
+		if isRemovedBlockType(oldInfo.BlockType) {
+			continue
+		}
+		preserve := (r.PreserveConceptStyle && isConceptOrStyle(oldInfo)) ||
 			(!newCodes[member.BlockCode] && r.shouldPreserveInfo(oldInfo)) ||
 			(r.Preserve880Members && strings.HasPrefix(member.BlockCode, "sh880"))
 		if !preserve {
@@ -465,7 +253,7 @@ func (r *BlockFetchResult) ApplyPrevious(blocks []model.BlockInfo, members []mod
 
 	r.Members = r.Members[:0]
 	for _, member := range memberSet {
-		if newCodes[member.BlockCode] {
+		if includedCodes[member.BlockCode] {
 			r.Members = append(r.Members, member)
 		}
 	}

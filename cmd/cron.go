@@ -3,15 +3,12 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/jing2uo/tdx2db/database"
 	"github.com/jing2uo/tdx2db/workflow"
 )
 
-func Cron(ctx context.Context, dbURI string, min bool, boardDataDir string) error {
-	boardDataDir = resolveBoardDataDir(boardDataDir)
-
+func Cron(ctx context.Context, dbURI string, min bool) error {
 	db, err := database.NewDB(dbURI)
 	if err != nil {
 		return fmt.Errorf("failed to create database driver: %w", err)
@@ -51,12 +48,11 @@ func Cron(ctx context.Context, dbURI string, min bool, boardDataDir string) erro
 	executor := workflow.NewTaskExecutor(db, workflow.GetRegisteredTasks())
 
 	args := &workflow.TaskArgs{
-		Min:          min,
-		TempDir:      TempDir,
-		VipdocDir:    VipdocDir,
-		BoardDataDir: boardDataDir,
-		Today:        today,
-		Plan:         plan,
+		Min:       min,
+		TempDir:   TempDir,
+		VipdocDir: VipdocDir,
+		Today:     today,
+		Plan:      plan,
 	}
 
 	taskNames := workflow.GetUpdateTaskNames()
@@ -67,11 +63,4 @@ func Cron(ctx context.Context, dbURI string, min bool, boardDataDir string) erro
 
 	fmt.Println("🚀 今日任务执行成功")
 	return nil
-}
-
-func resolveBoardDataDir(flagValue string) string {
-	if flagValue != "" {
-		return flagValue
-	}
-	return os.Getenv("TDX2DB_BOARD_DATA_DIR")
 }

@@ -71,7 +71,7 @@ TaskCalcBasic = &Task{
 - `executeInitDaily()` - Uses user-provided directory, then calls `executeDailyImport()`
 - `fetch_gbbq` downloads/extracts gbbq.zip once; `update_gbbq` decodes gbbq and `update_holidays` reads embedded zhb.zip from that extracted directory
 - `prepare_tic` downloads TIC archives and stores valid dates in `args.Extra[ExtraTicValidDates]`; `update_1min` imports only those dates
-- `update_blocks` depends on `update_daily`, builds a static + F10 block snapshot, preserves unavailable old rows and replaces raw_tdx_blocks_info/raw_tdx_blocks_member via `ImportBlockSnapshot`
+- `update_blocks` depends on `update_daily`, builds a static + infoharbor block snapshot, expands same-name index aliases, preserves unavailable old rows and replaces raw_tdx_blocks_info/raw_tdx_blocks_member via `ImportBlockSnapshot`
 - `update_symbol_names` pulls online code names into raw_symbol_name
 
 **TaskArgs:**

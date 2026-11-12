@@ -119,7 +119,7 @@ func buildCronTestBinary(t *testing.T) string {
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
-	cmd := exec.Command("go", "build", "-o", binary, ".")
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", binary, ".")
 	cmd.Dir = ".."
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build CLI for help test: %v\n%s", err, output)

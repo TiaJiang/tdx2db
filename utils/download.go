@@ -125,7 +125,6 @@ func (d *Download) run(ctx context.Context) (int, error) {
 	if statusCode != http.StatusOK {
 		return statusCode, fmt.Errorf("unexpected status: %d", statusCode)
 	}
-
 	// Step 2: 检查是否能获取 Content-Length
 	size, err := strconv.Atoi(res.Header.Get("Content-Length"))
 	if err != nil || size <= 0 {

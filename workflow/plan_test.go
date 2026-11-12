@@ -113,3 +113,33 @@ func TestBuildWorkPlanDetectsMissingBStockFactor(t *testing.T) {
 		t.Fatal("NeedFactor = false, want true for missing bstock factor")
 	}
 }
+
+func TestBuildWorkPlanAlwaysRefreshesOnlineBlocks(t *testing.T) {
+	today := planDate(2026, 1, 5)
+	repo := &fakePlanRepo{
+		holidays: []time.Time{planDate(2026, 1, 1)},
+		symbols:  []string{"sh600000"},
+		latestDates: map[string]map[string]time.Time{
+			model.TableKlineDaily.TableName: {
+				"sh600000": today,
+			},
+			model.TableBasicDaily.TableName: {
+				"sh600000": today,
+			},
+			model.TableAdjustFactor.TableName: {
+				"sh600000": today,
+			},
+		},
+	}
+
+	plan, err := BuildWorkPlan(repo, today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.NeedBlocks || !plan.AnyNeeded() {
+		t.Fatalf("plan should refresh online blocks: %+v", plan)
+	}
+	if plan.NeedDaily || plan.NeedGbbq || plan.NeedBasic || plan.NeedFactor || plan.NeedHolidays {
+		t.Fatalf("unrelated tasks should stay skipped: %+v", plan)
+	}
+}

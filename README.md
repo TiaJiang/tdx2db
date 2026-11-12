@@ -10,7 +10,7 @@
 - **增量更新**：日线 / 股本变迁 / 假期日历一条 `cron` 命令搞定
 - **分时数据**：可选导入 1 分钟分时
 - **复权与衍生**：自动计算后复权因子、前收盘价、换手率、市值
-- **在线数据**：基于 eltdx F10 拉取在线代码名称 + 板块 / 指数成分；板块目录与 880 行业来自本地静态 cfg
+- **在线数据**：基于 eltdx 拉取代码名称、`tdxhy.cfg` 和板块快照；行业目录从 TDX `gbbq.zip` 内的 `zhb.zip` 自动提取
 - **稳定可靠**：基于通达信公开数据，无需收费或限流接口
 
 ## 声明
@@ -41,7 +41,9 @@ python -m pip install "eltdx>=3.3.5"
 
 如使用虚拟环境，可通过 `TDX2DB_PYTHON` 指定 Python 解释器路径。
 
-板块目录需要通达信客户端目录中的 `tdxzs.cfg`、`tdxzs3.cfg` 和 `tdxhy.cfg`。通过 `--board-data-dir` 或 `TDX2DB_BOARD_DATA_DIR` 指定这些文件所在目录；未配置时 cron 不会失败，会仅更新数据库已有指数并保留旧的非指数板块。
+板块元数据默认全部在线获取，不需要安装通达信客户端。`tdxhy.cfg` 由 eltdx 下载，`tdxzs.cfg` / `tdxzs3.cfg` 从 TDX `gbbq.zip` 内嵌的 `zhb.zip` 提取。缓存默认位于 `os.UserCacheDir()/tdx2db/board-cache`，可用 `TDX2DB_BOARD_CACHE_DIR` 覆盖。
+
+如果本地已有通达信 `T0002/hq_cache`，仍可通过 `--board-data-dir` 或 `TDX2DB_BOARD_DATA_DIR` 临时覆盖在线目录；不是必需配置。
 
 ## 使用
 
@@ -80,7 +82,7 @@ tdx2db init --dburi 'clickhouse://localhost' --dayfiledir ./vipdoc
 ```bash
 tdx2db cron --dburi 'duckdb://tdx.db'
 
-# 指定 tdxzs.cfg / tdxzs3.cfg / tdxhy.cfg 所在目录
+# 可选：用本地通达信 hq_cache 覆盖在线目录
 tdx2db cron --dburi 'duckdb://tdx.db' --board-data-dir /path/to/T0002/hq_cache
 
 # 加 --min 才会下载并导入 1 分钟分时

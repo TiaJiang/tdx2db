@@ -41,19 +41,25 @@ type decodedBlockResponse struct {
 }
 
 type BlockFetchOptions struct {
-	BoardDataDir string
-	TempDir      string
-	IndexSymbols []string
+	BoardDataDir  string
+	BoardCacheDir string
+	TempDir       string
+	IndexNames    []model.SymbolName
 }
 
 type BlockFetchResult struct {
-	Blocks              []model.BlockInfo
-	Members             []model.BlockMember
-	Warnings            []string
-	FailedBlocks        []string
-	PreserveAllNonIndex bool
-	Preserve881         bool
-	Preserve880Members  bool
+	Blocks                  []model.BlockInfo
+	Members                 []model.BlockMember
+	Warnings                []string
+	FailedBlocks            []string
+	PreserveAllNonIndex     bool
+	Preserve881             bool
+	Preserve880Members      bool
+	PreserveConceptStyle    bool
+	PreserveAllIndices      bool
+	PreserveUnlistedIndices bool
+	PreserveRegionMembers   bool
+	Stats                   boardBulkStats
 }
 
 type f10BlockTask struct {
@@ -68,51 +74,161 @@ type f10BlockRequest struct {
 }
 
 func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetchResult, error) {
-	staticData, err := loadStaticBoardData(ctx, opts.BoardDataDir)
+	cacheDir, err := resolveBoardCacheDir(opts.BoardCacheDir)
 	if err != nil {
 		return nil, err
 	}
 
-	request := buildF10BlockRequest(staticData.Blocks, opts.IndexSymbols)
-	if len(request.Indices) == 0 {
-		staticData.Warnings = append(staticData.Warnings,
-			"数据库中无可用指数标的，指数板块本次无目录可更新")
+	catalogResult, catalogErr := ensureOnlineBoardCatalog(ctx, cacheDir, opts.TempDir, opts.BoardDataDir)
+
+	syncResponse, syncErr := syncBoardFiles(ctx, opts.TempDir, cacheDir)
+	if syncErr != nil {
+		syncResponse = eltdxBoardSyncResponse{}
 	}
-	response := decodedBlockResponse{}
-	if len(request.Themes) > 0 || len(request.Indices) > 0 {
-		response, err = fetchF10Blocks(ctx, opts.TempDir, request)
-		if err != nil {
+	syncedFiles := make(map[string]boardFileSync, len(syncResponse.Files))
+	for _, file := range syncResponse.Files {
+		syncedFiles[file.Name] = file
+	}
+
+	staticDir, tdxhySnapshot, err := prepareStaticBoardDir(
+		opts.TempDir, cacheDir, opts.BoardDataDir, syncedFiles,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare static board data: %w", err)
+	}
+	defer os.RemoveAll(staticDir)
+	staticData, err := loadStaticBoardData(ctx, staticDir)
+	if err != nil {
+		return nil, err
+	}
+	if tdxhySnapshot != nil && tdxhySnapshot.Status == "downloaded" {
+		if err := commitBoardSnapshot(tdxhySnapshot.StagingPath, tdxhySnapshot.CachePath); err != nil {
 			return nil, err
+		}
+		if tdxhySnapshot.MD5 != "" {
+			if err := updateBoardCacheMetadata(
+				cacheDir, tdxhySnapshot.Name, tdxhySnapshot.MD5, tdxhySnapshot.Size,
+			); err != nil {
+				return nil, err
+			}
 		}
 	}
 
 	result := &BlockFetchResult{
-		Warnings:            append(staticData.Warnings, response.Warnings...),
-		FailedBlocks:        normalizeBlockCodes(response.FailedBlocks),
-		PreserveAllNonIndex: staticData.PreserveAllNonIndex,
-		Preserve881:         staticData.Preserve881,
-		Preserve880Members:  staticData.Preserve880Members,
+		Warnings:              append([]string(nil), staticData.Warnings...),
+		PreserveAllNonIndex:   staticData.PreserveAllNonIndex,
+		Preserve881:           staticData.Preserve881,
+		Preserve880Members:    staticData.Preserve880Members,
+		PreserveRegionMembers: staticData.PreserveRegion,
+		Stats: boardBulkStats{
+			MetaRequests:     syncResponse.MetaRequests,
+			FileDownloads:    syncResponse.FileDownloads,
+			ChunkRequests:    chunkRequests(syncResponse.Files),
+			CatalogChecks:    catalogResult.Checks,
+			CatalogDownloads: catalogResult.Downloads,
+		},
+	}
+	result.Warnings = append(result.Warnings, catalogResult.Warnings...)
+	if catalogErr != nil {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("在线板块目录不可用，保留旧板块数据: %v", catalogErr))
+	}
+	if syncErr != nil {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("tdxhy.cfg 批量同步失败，保留旧行业数据: %v", syncErr))
 	}
 
-	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(response.Blocks))
+	result.Warnings = append(result.Warnings, syncResponse.Warnings...)
+
+	infoHarborResponse := decodedBlockResponse{}
+	infoHarborFile, hasInfoHarbor := syncedFiles[infoHarborBlockFile]
+	if !hasInfoHarbor {
+		candidate := filepath.Join(cacheDir, infoHarborBlockFile)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			infoHarborFile = boardFileSync{
+				Name:      infoHarborBlockFile,
+				Status:    "cached",
+				CachePath: candidate,
+			}
+			hasInfoHarbor = true
+		}
+	}
+	indexResponse := indexBlockParseResult{}
+	if hasInfoHarbor {
+		parsed, loadErr := loadBoardSnapshot(ctx, cacheDir, infoHarborFile, func(ctx context.Context, path string) (infoHarborParseResult, error) {
+			return parseInfoHarborAll(ctx, path, opts.IndexNames)
+		})
+		if loadErr != nil {
+			result.PreserveConceptStyle = true
+			result.PreserveAllIndices = true
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s 解析失败，保留旧概念、风格和指数数据: %v", infoHarborBlockFile, loadErr))
+		} else {
+			infoHarborResponse = parsed.Response
+			indexResponse = parsed.Indices
+			if parsed.IndexErr != nil {
+				result.PreserveAllIndices = true
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("%s 指数段解析失败，保留旧指数数据: %v", infoHarborBlockFile, parsed.IndexErr))
+			} else {
+				result.PreserveUnlistedIndices = true
+				result.PreserveAllIndices = indexResponse.PreserveAllIndices
+				result.Stats.IndexNames = indexResponse.IndexNames
+				result.Stats.IndexMatched = indexResponse.IndexMatched
+				result.Stats.IndexAmbiguous = indexResponse.IndexAmbiguous
+				result.Stats.IndexUnmatched = indexResponse.IndexUnmatched
+			}
+		}
+	} else {
+		result.PreserveConceptStyle = true
+		result.PreserveAllIndices = true
+		result.Warnings = append(result.Warnings, "在线板块包中缺少 infoharbor_block.dat")
+	}
+
+	request := buildF10BlockRequest(staticData.Blocks, staticData.RegionFallback)
+	request.Indices = append(request.Indices, indexResponse.FallbackIndices...)
+	if len(opts.IndexNames) == 0 && !result.PreserveAllIndices {
+		result.Warnings = append(result.Warnings,
+			"数据库中无可用指数标的，指数板块本次无目录可更新")
+	}
+	f10Response := decodedBlockResponse{}
+	if len(request.Themes) > 0 || len(request.Indices) > 0 {
+		f10Response, err = fetchF10Blocks(ctx, opts.TempDir, request)
+		if err != nil {
+			return nil, err
+		}
+	}
+	result.Stats.F10FallbackBlocks = len(request.Themes) + len(request.Indices)
+
+	result.Warnings = append(result.Warnings, infoHarborResponse.Warnings...)
+	result.Warnings = append(result.Warnings, indexResponse.Response.Warnings...)
+	result.Warnings = append(result.Warnings, f10Response.Warnings...)
+	result.Warnings = compactStrings(result.Warnings)
+	result.FailedBlocks = normalizeBlockCodes(f10Response.FailedBlocks)
+
+	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(infoHarborResponse.Blocks)+len(indexResponse.Response.Blocks)+len(f10Response.Blocks))
 	for _, info := range staticData.Blocks {
 		infos[info.BlockCode] = info
 	}
-	for _, info := range response.Blocks {
-		if info.BlockCode == "" {
-			continue
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, f10Response} {
+		for _, info := range response.Blocks {
+			if info.BlockCode == "" {
+				continue
+			}
+			infos[info.BlockCode] = info
 		}
-		infos[info.BlockCode] = info
 	}
-	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(response.Members))
+	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(infoHarborResponse.Members)+len(indexResponse.Response.Members)+len(f10Response.Members))
 	for _, member := range staticData.Members {
 		memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 	}
-	for _, member := range response.Members {
-		if member.StockSymbol == "" || member.BlockCode == "" {
-			continue
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, f10Response} {
+		for _, member := range response.Members {
+			if member.StockSymbol == "" || member.BlockCode == "" {
+				continue
+			}
+			memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 		}
-		memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 	}
 
 	for _, info := range infos {
@@ -128,20 +244,17 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 	return result, nil
 }
 
-func buildF10BlockRequest(blocks []model.BlockInfo, indexSymbols []string) f10BlockRequest {
+func buildF10BlockRequest(blocks []model.BlockInfo, regionFallback bool) f10BlockRequest {
 	request := f10BlockRequest{
 		Themes:  make([]f10BlockTask, 0),
 		Indices: make([]f10BlockTask, 0),
 	}
+	if !regionFallback {
+		return request
+	}
 	themeSeen := make(map[string]bool)
 	for _, info := range blocks {
-		if info.BlockType == blockTypeIndustry && !strings.HasPrefix(info.BlockCode, "sh881") {
-			continue
-		}
-		if info.BlockType != blockTypeConcept &&
-			info.BlockType != blockTypeStyle &&
-			info.BlockType != blockTypeRegion &&
-			info.BlockType != blockTypeIndustry {
+		if info.BlockType != blockTypeRegion {
 			continue
 		}
 		if themeSeen[info.BlockCode] {
@@ -155,20 +268,8 @@ func buildF10BlockRequest(blocks []model.BlockInfo, indexSymbols []string) f10Bl
 		})
 	}
 
-	indexSeen := make(map[string]bool)
-	for _, symbol := range indexSymbols {
-		symbol = normalizeBlockCode(symbol)
-		if symbol == "" || indexSeen[symbol] {
-			continue
-		}
-		indexSeen[symbol] = true
-		request.Indices = append(request.Indices, f10BlockTask{BlockCode: symbol})
-	}
 	sort.Slice(request.Themes, func(i, j int) bool {
 		return request.Themes[i].BlockCode < request.Themes[j].BlockCode
-	})
-	sort.Slice(request.Indices, func(i, j int) bool {
-		return request.Indices[i].BlockCode < request.Indices[j].BlockCode
 	})
 	return request
 }
@@ -350,8 +451,11 @@ func (r *BlockFetchResult) ApplyPrevious(blocks []model.BlockInfo, members []mod
 		memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 	}
 	for _, member := range members {
+		oldInfo := oldInfoByCode[member.BlockCode]
 		preserve := failed[member.BlockCode] ||
-			r.shouldPreserveInfo(oldInfoByCode[member.BlockCode]) ||
+			(r.PreserveConceptStyle && isConceptOrStyle(oldInfo)) ||
+			(r.PreserveRegionMembers && oldInfo.BlockType == blockTypeRegion) ||
+			(!newCodes[member.BlockCode] && r.shouldPreserveInfo(oldInfo)) ||
 			(r.Preserve880Members && strings.HasPrefix(member.BlockCode, "sh880"))
 		if !preserve {
 			continue
@@ -377,7 +481,17 @@ func (r *BlockFetchResult) shouldPreserveInfo(info model.BlockInfo) bool {
 		!strings.HasPrefix(info.BlockCode, "sh881") {
 		return true
 	}
+	if r.PreserveConceptStyle && isConceptOrStyle(info) {
+		return true
+	}
+	if (r.PreserveAllIndices || r.PreserveUnlistedIndices) && info.BlockType == blockTypeIndex {
+		return true
+	}
 	return r.Preserve881 && strings.HasPrefix(info.BlockCode, "sh881")
+}
+
+func isConceptOrStyle(info model.BlockInfo) bool {
+	return info.BlockType == blockTypeConcept || info.BlockType == blockTypeStyle
 }
 
 func sortBlockInfos(infos []model.BlockInfo) {

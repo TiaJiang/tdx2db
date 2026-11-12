@@ -42,29 +42,35 @@ func TestBuildF10BlockRequest(t *testing.T) {
 		{BlockType: blockTypeIndustry, BlockCode: "sh880301", BlockName: "煤炭"},
 		{BlockType: blockTypeIndustry, BlockCode: "sh881001", BlockName: "煤炭"},
 		{BlockType: blockTypeConcept, BlockCode: "sh880522", BlockName: "概念"},
-	}, []string{"000300", "sz399006", "sh000300"})
+		{BlockType: blockTypeStyle, BlockCode: "sh880897", BlockName: "风格"},
+		{BlockType: blockTypeRegion, BlockCode: "sh880201", BlockName: "黑龙江"},
+	}, true)
 
-	if len(request.Themes) != 2 {
-		t.Fatalf("themes = %d, want 2: %+v", len(request.Themes), request.Themes)
+	if len(request.Themes) != 1 {
+		t.Fatalf("themes = %d, want 1: %+v", len(request.Themes), request.Themes)
 	}
-	if request.Themes[0].BlockCode != "sh880522" || request.Themes[1].BlockCode != "sh881001" {
+	if request.Themes[0].BlockCode != "sh880201" || request.Themes[0].BlockType != blockTypeRegion {
 		t.Fatalf("unexpected themes: %+v", request.Themes)
-	}
-	if len(request.Indices) != 2 {
-		t.Fatalf("indices = %d, want 2: %+v", len(request.Indices), request.Indices)
-	}
-	if request.Indices[0].BlockCode != "sh000300" || request.Indices[1].BlockCode != "sz399006" {
-		t.Fatalf("unexpected indices: %+v", request.Indices)
 	}
 }
 
 func TestBuildF10BlockRequestUsesEmptyArrays(t *testing.T) {
-	data, err := json.Marshal(buildF10BlockRequest(nil, nil))
+	data, err := json.Marshal(buildF10BlockRequest(nil, false))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(data) != `{"themes":[],"indices":[]}` {
 		t.Fatalf("empty request = %s", data)
+	}
+}
+
+func TestBuildF10BlockRequestSkipsRegionsWhenLocalDBFExists(t *testing.T) {
+	request := buildF10BlockRequest([]model.BlockInfo{
+		{BlockType: blockTypeRegion, BlockCode: "sh880201", BlockName: "黑龙江"},
+		{BlockType: blockTypeConcept, BlockCode: "sh880522", BlockName: "概念"},
+	}, false)
+	if len(request.Themes) != 0 || len(request.Indices) != 0 {
+		t.Fatalf("unexpected F10 fallback: %+v", request)
 	}
 }
 
@@ -150,7 +156,7 @@ func TestEmbeddedBlockBridgeHasNoMacCalls(t *testing.T) {
 }
 
 func TestEmbeddedBlockBridgeIsSerial(t *testing.T) {
-	for _, forbidden := range []string{"ThreadPoolExecutor", "F10_WORKERS"} {
+	for _, forbidden := range []string{"ThreadPoolExecutor", "F10_WORKERS", "asyncio"} {
 		if strings.Contains(eltdxOnlineScript, forbidden) {
 			t.Fatalf("embedded block bridge contains concurrent execution reference %q", forbidden)
 		}

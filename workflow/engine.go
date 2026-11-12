@@ -173,6 +173,7 @@ func (te *TaskExecutor) Run(ctx context.Context, taskNames []string, args *TaskA
 				// 用户看到"今日任务执行成功"很容易误判。
 				fmt.Fprintf(os.Stderr, "💢 任务 %s 失败但已跳过: %v\n",
 					completed.name, completed.result.Error)
+				completed.result.State = StateSkipped
 			}
 		}
 	}

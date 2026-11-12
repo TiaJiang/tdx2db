@@ -17,7 +17,7 @@ var TaskUpdateBlocks *Task
 func init() {
 	TaskUpdateBlocks = &Task{
 		Name:      "update_blocks",
-		DependsOn: []string{"update_daily"},
+		DependsOn: []string{"update_daily", "update_symbol_names", "fetch_gbbq"},
 		Executor:  executeUpdateBlocks,
 		OnError:   ErrorModeSkip,
 	}
@@ -27,15 +27,18 @@ func init() {
 func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *TaskArgs) (*TaskResult, error) {
 	fmt.Println("开始更新板块元数据")
 
-	indexSymbols, err := db.GetSymbolsByClass(model.ClassIndex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query index symbols: %w", err)
+	var indexNames []model.SymbolName
+	if err := db.QueryRows(ctx,
+		"SELECT symbol, name, class FROM "+model.TableSymbolName.TableName+" WHERE class = 'index' ORDER BY symbol",
+		&indexNames,
+	); err != nil {
+		return nil, fmt.Errorf("failed to query index names: %w", err)
 	}
 
 	result, err := tdx.FetchOnlineBlocks(ctx, tdx.BlockFetchOptions{
 		BoardDataDir: args.BoardDataDir,
 		TempDir:      args.TempDir,
-		IndexSymbols: indexSymbols,
+		IndexNames:   indexNames,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch block metadata: %w", err)
@@ -59,6 +62,19 @@ func executeUpdateBlocks(ctx context.Context, db database.DataRepository, args *
 	if len(result.Blocks) == 0 {
 		return nil, fmt.Errorf("no block metadata available; previous tables were left unchanged")
 	}
+	fmt.Printf(
+		"板块批量同步: block_meta=%d, file_download=%d, chunks=%d, catalog_check=%d, catalog_download=%d, index_names=%d, index_matched=%d, index_ambiguous=%d, index_unmatched=%d, f10_fallback=%d\n",
+		result.Stats.MetaRequests,
+		result.Stats.FileDownloads,
+		result.Stats.ChunkRequests,
+		result.Stats.CatalogChecks,
+		result.Stats.CatalogDownloads,
+		result.Stats.IndexNames,
+		result.Stats.IndexMatched,
+		result.Stats.IndexAmbiguous,
+		result.Stats.IndexUnmatched,
+		result.Stats.F10FallbackBlocks,
+	)
 
 	infoCSV := filepath.Join(args.TempDir, "tdx_blocks_info.csv")
 	infoWriter, err := utils.NewCSVWriter[model.BlockInfo](infoCSV)

@@ -55,7 +55,7 @@ Database URI:
 
 const dayFileInfo = "通达信日线文件目录"
 const minInfo = "导入 1 分钟分时数据（可选）"
-const boardDataInfo = "通达信板块静态文件目录（tdxzs.cfg/tdxzs3.cfg/tdxhy.cfg）"
+const boardDataInfo = "可选：本地通达信 hq_cache 目录，覆盖在线板块目录"
 
 func main() {
 	// 创建可取消的 context

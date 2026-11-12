@@ -20,13 +20,14 @@ type WorkPlan struct {
 	NeedBasic    bool
 	NeedFactor   bool
 	NeedHolidays bool
+	NeedBlocks   bool
 
 	Reason string // 用于日志
 }
 
 // AnyNeeded 是否有任何任务需要执行。
 func (p *WorkPlan) AnyNeeded() bool {
-	return p.NeedDaily || p.NeedGbbq || p.NeedBasic || p.NeedFactor || p.NeedHolidays
+	return p.NeedDaily || p.NeedGbbq || p.NeedBasic || p.NeedFactor || p.NeedHolidays || p.NeedBlocks
 }
 
 // BuildWorkPlan 读取交易日历与各表最新日期，推导本次 cron 要做什么。
@@ -62,6 +63,7 @@ func BuildWorkPlan(db database.DataRepository, today time.Time) (*WorkPlan, erro
 		plan.Reason = "🛑 数据库无日线数据，请先运行 init"
 		return plan, nil
 	}
+	plan.NeedBlocks = true
 
 	basicDates, err := db.GetLatestDates(model.TableBasicDaily.TableName, "date")
 	if err != nil {
@@ -130,10 +132,10 @@ func describePlan(plan *WorkPlan, dailyLatest time.Time) string {
 
 	switch {
 	case cal.IsHoliday(plan.Today):
-		return fmt.Sprintf("🎉 今日 %s 为节假日，A 股休市，全部任务跳过", dayStr)
+		return fmt.Sprintf("🎉 今日 %s 为节假日，A 股休市；更新在线代码名称和板块元数据", dayStr)
 	case cal.IsWeekend(plan.Today):
-		return fmt.Sprintf("🌴 今日 %s 为周末，A 股休市，全部任务跳过", dayStr)
+		return fmt.Sprintf("🌴 今日 %s 为周末，A 股休市；更新在线代码名称和板块元数据", dayStr)
 	default:
-		return fmt.Sprintf("✅ 数据库已是最新 (%s)，全部任务跳过", dailyLatest.Format("2006-01-02"))
+		return fmt.Sprintf("✅ 数据库已是最新 (%s)；更新在线代码名称和板块元数据", dailyLatest.Format("2006-01-02"))
 	}
 }

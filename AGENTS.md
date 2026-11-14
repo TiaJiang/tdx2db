@@ -59,7 +59,7 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 | BlockMember | type | model/schema.go:84 | 在线板块成分关系 |
 | SymbolName | type | model/schema.go:89 | 在线代码名称 (symbol/name/class) |
 | ClassifyCode | func | model/classify.go:58 | symbol → stock/index/etf/block/unknown |
-| PriceScale | func | model/classify.go:89 | TDX 原始整数价格换算 (股票=100, ETF/B股=1000, 可转债=10000) |
+| PriceScale | func | model/classify.go:89 | TDX 原始整数价格换算 (股票=100, 沪B/ETF=1000, 深B=100, 可转债=10000) |
 | SchemaFromStruct | func | model/tables.go:54 | Reflect-based table registration |
 | FetchOnlineBlocks | func | tdx/block.go | 合并静态板块目录与 infoharbor 指数成分，按名称展开同码别名并保留旧数据 |
 | FetchOnlineSymbolNames | func | tdx/stock.go:22 | 通过 eltdx 拉取沪深京在线代码名称 |
@@ -98,7 +98,7 @@ Current schema version: **v8.0** (`model.SchemaMajor=8, SchemaMinor=0`). The `_m
 - basic/factor calculation uses `GetSymbolsByClass("stock", "etf", "bstock")` — index/block 仍排除在 calc 输出之外
 - stock/etf/bstock 复权视图通过 `raw_symbol_class` 过滤；`v_index` 单独过滤 index，只读 `raw_kline_daily`，不提供指数 qfq/hfq
 - B 股 (sh900/sz20) 归为 bstock；ETF/LOF 归为 etf
-- `PriceScale(symbol)`：股票/指数/板块 价格单位 0.01 元(=100)，ETF/LOF/B股 0.001 元(=1000)，可转债 0.0001 元(=10000)
+- `PriceScale(symbol)`：股票/指数/板块/深市 B 股价格单位 0.01(=100)，沪市 B 股/ETF/LOF 0.001(=1000)，可转债 0.0001(=10000)
 - `SymbolFromCode(code)`：6 位裸数字反查市场前缀（考虑 stock/etf/bstock）
 - Class `cbond` 包括可转债；Class `unknown` 包括国债 (sh24xxxx) 等未覆盖品种
 
@@ -331,7 +331,7 @@ critical 必须为零；历史 OHLC warning 可以存在，但必须在最终结
 - 分时数据无历史 — need to backfill manually
 - Symbol code changes not handled (历史记录不更新)
 - 指数/板块 (sh000xxx, sz399xxx, sh880/881xxx) 不在 calc 输出范围内（GetSymbolsByClass 只取 stock + etf + bstock）；指数日线通过 `v_index` 提供
-- ETF/LOF/B股 K线价格按 0.001 元解析 (`PriceScale`)，否则有 10x 偏差；新增品种前缀时务必检查
+- ETF/LOF/沪市 B 股 K线价格按 0.001 解析，深市 B 股按 0.01 解析 (`PriceScale`)；否则有 10x 偏差，新增品种前缀时务必检查
 - ETF 拆分日 (cat=11) PreClose 必须除以 Splitc3，否则当天涨跌幅会异常
 - `raw_symbol_class` is rebuilt from `raw_kline_daily` on each daily import — adding classification rules retroactively will auto-classify on next import
 - `raw_symbol_name` comes from online quote-server code-name data and is separate from `raw_symbol_class`; class is stored from the online list but basic/factor still use `raw_symbol_class`

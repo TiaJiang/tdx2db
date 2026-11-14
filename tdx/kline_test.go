@@ -169,3 +169,32 @@ func TestProcessDayFileScalesConvertibleBond(t *testing.T) {
 		t.Fatalf("close = %v, want 145.93", rows[0].Close)
 	}
 }
+
+func TestProcessDayFileScalesBStocksByExchange(t *testing.T) {
+	tests := []struct {
+		symbol string
+		raw    uint32
+		want   float64
+	}{
+		{symbol: "sz200541", raw: 182, want: 1.82},
+		{symbol: "sh900901", raw: 567, want: 0.567},
+	}
+	for _, tt := range tests {
+		t.Run(tt.symbol, func(t *testing.T) {
+			data := make([]byte, recordSize)
+			binary.LittleEndian.PutUint32(data[0:4], 20261106)
+			binary.LittleEndian.PutUint32(data[4:8], tt.raw)
+			binary.LittleEndian.PutUint32(data[8:12], tt.raw)
+			binary.LittleEndian.PutUint32(data[12:16], tt.raw)
+			binary.LittleEndian.PutUint32(data[16:20], tt.raw)
+
+			rows, err := processDayFile(data, tt.symbol)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].Close != tt.want {
+				t.Fatalf("rows = %+v, want close %v", rows, tt.want)
+			}
+		})
+	}
+}

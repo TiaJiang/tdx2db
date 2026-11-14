@@ -95,10 +95,41 @@ func (d *DuckDBDriver) ImportKline1Min(path string) error {
 }
 
 func (d *DuckDBDriver) ImportGBBQ(path string) error {
-	if err := d.TruncateTable(model.TableGbbq); err != nil {
-		return err
+	tx, err := d.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("failed to begin gbbq import: %w", err)
 	}
-	return d.ImportCSV(model.TableGbbq, path)
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DROP TABLE IF EXISTS incoming_gbbq"); err != nil {
+		return fmt.Errorf("failed to clear gbbq staging table: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`
+		CREATE TEMP TABLE incoming_gbbq AS
+		SELECT * FROM read_csv('%s',
+			header=true,
+			columns={%s},
+			dateformat='%%Y-%%m-%%d'
+		)
+	`, path, duckDBCSVColumns(d, model.TableGbbq))); err != nil {
+		return fmt.Errorf("failed to stage gbbq csv: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM " + model.TableGbbq.TableName); err != nil {
+		return fmt.Errorf("failed to clear gbbq table: %w", err)
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`
+		INSERT INTO %s
+		SELECT DISTINCT * FROM incoming_gbbq
+	`, model.TableGbbq.TableName)); err != nil {
+		return fmt.Errorf("failed to insert gbbq rows: %w", err)
+	}
+	if _, err := tx.Exec("DROP TABLE incoming_gbbq"); err != nil {
+		return fmt.Errorf("failed to drop gbbq staging table: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit gbbq import: %w", err)
+	}
+	return nil
 }
 
 func (d *DuckDBDriver) ImportBasic(path string, rebuildSymbols []string) error {

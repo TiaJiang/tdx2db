@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jing2uo/tdx2db/model"
 )
 
 func TestParseIncrFilename(t *testing.T) {
@@ -121,6 +123,25 @@ func TestMakeDayRecordEncodesOverflowVolume(t *testing.T) {
 	}
 	if got := parseDayVolume(volRaw, reserved); got != int64(rec.Volume) {
 		t.Errorf("parseDayVolume round-trip = %d, want %d", got, rec.Volume)
+	}
+}
+
+func TestMakeDayRecordRoundTripsShenzhenBStockPrice(t *testing.T) {
+	rec := md1OHLCV{
+		Open: 1.81, High: 1.84, Low: 1.80, Close: 1.82,
+		Amount: 391883, Volume: 2150,
+	}
+	symbol := "sz200541"
+	buf := makeDayRecord(20261106, rec, model.PriceScale(symbol), false)
+	if got := binary.LittleEndian.Uint32(buf[16:20]); got != 182 {
+		t.Fatalf("close raw = %d, want 182", got)
+	}
+	rows, err := processDayFile(buf, symbol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Close != 1.82 {
+		t.Fatalf("rows = %+v, want close 1.82", rows)
 	}
 }
 

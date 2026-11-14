@@ -25,14 +25,14 @@ func TestClassifyCodeSeparatesBShare(t *testing.T) {
 	}
 }
 
-func TestPriceScaleKeepsBSharePrecision(t *testing.T) {
+func TestPriceScaleKeepsExchangeSpecificBSharePrecision(t *testing.T) {
 	tests := []struct {
 		symbol string
 		want   float64
 	}{
 		{symbol: "sh600000", want: 100},
 		{symbol: "sh900936", want: 1000},
-		{symbol: "sz200541", want: 1000},
+		{symbol: "sz200541", want: 100},
 		{symbol: "sh510300", want: 1000},
 		{symbol: "sh113001", want: 10000},
 		{symbol: "sz123001", want: 10000},

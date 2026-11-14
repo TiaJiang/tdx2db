@@ -152,15 +152,34 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 			"数据库中无可用指数标的，指数板块本次无目录可更新")
 	}
 
+	existingIndexCodes := make(map[string]bool)
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response} {
+		for _, info := range response.Blocks {
+			existingIndexCodes[info.BlockCode] = true
+		}
+	}
+	spBlockResponse := decodedBlockResponse{}
+	spBlockPath := filepath.Join(cacheDir, spBlockFile)
+	if _, statErr := os.Stat(spBlockPath); statErr == nil {
+		parsed, parseErr := parseSpBlock(ctx, spBlockPath, opts.IndexNames, existingIndexCodes)
+		if parseErr != nil {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("%s 解析失败，跳过指数补充: %v", spBlockFile, parseErr))
+		} else {
+			spBlockResponse = parsed
+		}
+	}
+
 	result.Warnings = append(result.Warnings, infoHarborResponse.Warnings...)
 	result.Warnings = append(result.Warnings, indexResponse.Response.Warnings...)
+	result.Warnings = append(result.Warnings, spBlockResponse.Warnings...)
 	result.Warnings = compactStrings(result.Warnings)
 
-	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(infoHarborResponse.Blocks)+len(indexResponse.Response.Blocks))
+	infos := make(map[string]model.BlockInfo, len(staticData.Blocks)+len(infoHarborResponse.Blocks)+len(indexResponse.Response.Blocks)+len(spBlockResponse.Blocks))
 	for _, info := range staticData.Blocks {
 		infos[info.BlockCode] = info
 	}
-	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response} {
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, spBlockResponse} {
 		for _, info := range response.Blocks {
 			if info.BlockCode == "" {
 				continue
@@ -168,11 +187,11 @@ func FetchOnlineBlocks(ctx context.Context, opts BlockFetchOptions) (*BlockFetch
 			infos[info.BlockCode] = info
 		}
 	}
-	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(infoHarborResponse.Members)+len(indexResponse.Response.Members))
+	memberSet := make(map[string]model.BlockMember, len(staticData.Members)+len(infoHarborResponse.Members)+len(indexResponse.Response.Members)+len(spBlockResponse.Members))
 	for _, member := range staticData.Members {
 		memberSet[member.StockSymbol+"\x00"+member.BlockCode] = member
 	}
-	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response} {
+	for _, response := range []decodedBlockResponse{infoHarborResponse, indexResponse.Response, spBlockResponse} {
 		for _, member := range response.Members {
 			if member.StockSymbol == "" || member.BlockCode == "" {
 				continue

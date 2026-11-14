@@ -54,6 +54,9 @@ func TestEnsureOnlineBoardCatalogDownloadsAndReusesETag(t *testing.T) {
 	if !hasBoardCatalog(cacheDir) {
 		t.Fatal("board catalog was not written to cache")
 	}
+	if !boardCatalogFileExists(cacheDir, spBlockFile) {
+		t.Fatalf("%s was not written to cache: %+v", spBlockFile, result)
+	}
 
 	metadata := readBoardCacheMetadata(cacheDir)
 	metadata.CatalogCheckedAt = "2000-01-01"
@@ -124,6 +127,143 @@ func TestEnsureOnlineBoardCatalogReusesDownloadedGBBQ(t *testing.T) {
 	}
 	if result.Checks != 0 || result.Downloads != 0 || !hasBoardCatalog(cacheDir) {
 		t.Fatalf("shared gbbq.zip was not reused: %+v", result)
+	}
+}
+
+func TestEnsureOnlineBoardCatalogBackfillsSpBlockWithoutNetwork(t *testing.T) {
+	cacheDir := t.TempDir()
+	writeCatalogFixture(t, cacheDir)
+	today := time.Now().Format("2006-01-02")
+	metadata := boardCacheMetadata{
+		Files:               make(map[string]boardCacheFileMetadata),
+		CatalogCheckedAt:    today,
+		CatalogETag:         `"catalog-old"`,
+		CatalogLastModified: "Wed, 11 Nov 2026 12:50:13 GMT",
+	}
+	writeBoardCacheMetadataFixture(t, cacheDir, metadata)
+
+	tempDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tempDir, "gbbq.zip"), boardCatalogArchive(t), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var networkCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		networkCalls.Add(1)
+	}))
+	defer server.Close()
+	oldURL := boardCatalogURL
+	boardCatalogURL = server.URL
+	t.Cleanup(func() { boardCatalogURL = oldURL })
+
+	result, err := ensureOnlineBoardCatalog(context.Background(), cacheDir, tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if networkCalls.Load() != 0 || result.Checks != 0 || result.Downloads != 0 {
+		t.Fatalf("network was used during spblock backfill: calls=%d result=%+v", networkCalls.Load(), result)
+	}
+	if !boardCatalogFileExists(cacheDir, spBlockFile) {
+		t.Fatalf("%s was not backfilled: %+v", spBlockFile, result)
+	}
+	got := readBoardCacheMetadata(cacheDir)
+	if got.CatalogCheckedAt != today || got.CatalogETag != metadata.CatalogETag ||
+		got.CatalogLastModified != metadata.CatalogLastModified {
+		t.Fatalf("catalog metadata changed: %+v", got)
+	}
+}
+
+func TestEnsureOnlineBoardCatalogWarnsWhenCheckedSpBlockCannotBeBackfilled(t *testing.T) {
+	cacheDir := t.TempDir()
+	writeCatalogFixture(t, cacheDir)
+	today := time.Now().Format("2006-01-02")
+	metadata := boardCacheMetadata{
+		Files:               make(map[string]boardCacheFileMetadata),
+		CatalogCheckedAt:    today,
+		CatalogETag:         `"catalog-old"`,
+		CatalogLastModified: "Wed, 11 Nov 2026 12:50:13 GMT",
+	}
+	writeBoardCacheMetadataFixture(t, cacheDir, metadata)
+
+	var networkCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		networkCalls.Add(1)
+	}))
+	defer server.Close()
+	oldURL := boardCatalogURL
+	boardCatalogURL = server.URL
+	t.Cleanup(func() { boardCatalogURL = oldURL })
+
+	result, err := ensureOnlineBoardCatalog(context.Background(), cacheDir, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if networkCalls.Load() != 0 || result.Checks != 0 || result.Downloads != 0 {
+		t.Fatalf("network was used during unavailable spblock backfill: calls=%d result=%+v", networkCalls.Load(), result)
+	}
+	if len(result.Warnings) != 1 || !strings.Contains(result.Warnings[0], spBlockFile) {
+		t.Fatalf("missing spblock warning: %+v", result.Warnings)
+	}
+	if boardCatalogFileExists(cacheDir, spBlockFile) {
+		t.Fatalf("%s was unexpectedly created", spBlockFile)
+	}
+	got := readBoardCacheMetadata(cacheDir)
+	if got.CatalogCheckedAt != today || got.CatalogETag != metadata.CatalogETag ||
+		got.CatalogLastModified != metadata.CatalogLastModified {
+		t.Fatalf("catalog metadata changed: %+v", got)
+	}
+}
+
+func TestInstallBoardCatalogIsolatesSpBlockFailures(t *testing.T) {
+	tests := []struct {
+		name    string
+		spBlock []byte
+	}{
+		{name: "invalid", spBlock: []byte("#中证500,1,,20070115,,,\ninvalid\n")},
+		{name: "missing", spBlock: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cacheDir := t.TempDir()
+			writeCatalogFixture(t, cacheDir)
+			oldSpBlock := []byte("old-spblock")
+			if err := os.WriteFile(filepath.Join(cacheDir, spBlockFile), oldSpBlock, 0644); err != nil {
+				t.Fatal(err)
+			}
+			archivePath := filepath.Join(t.TempDir(), "gbbq.zip")
+			if err := os.WriteFile(archivePath, boardCatalogArchiveWithSpBlock(t, tt.spBlock), 0644); err != nil {
+				t.Fatal(err)
+			}
+			metadata := boardCacheMetadata{Files: make(map[string]boardCacheFileMetadata)}
+			warnings, err := installBoardCatalog(
+				context.Background(), cacheDir, archivePath, &metadata, "2026-11-13",
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(warnings) != 1 || !strings.Contains(warnings[0], spBlockFile) {
+				t.Fatalf("missing isolation warning: %+v", warnings)
+			}
+			data, err := os.ReadFile(filepath.Join(cacheDir, spBlockFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, oldSpBlock) {
+				t.Fatalf("old %s was replaced: %q", spBlockFile, data)
+			}
+			if _, err := os.Stat(filepath.Join(cacheDir, spBlockFile+".download")); !os.IsNotExist(err) {
+				t.Fatalf("staging file was not removed: %v", err)
+			}
+			catalog, err := os.ReadFile(filepath.Join(cacheDir, tdxzsConfigFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Contains(catalog, []byte("煤炭")) {
+				t.Fatalf("core catalog was not committed: %q", catalog)
+			}
+			if metadata.CatalogCheckedAt != "2026-11-13" {
+				t.Fatalf("catalog check time = %q", metadata.CatalogCheckedAt)
+			}
+		})
 	}
 }
 
@@ -252,6 +392,75 @@ func TestFetchOnlineBlocksExpandsIndexAliasesWithoutF10(t *testing.T) {
 		}
 	}
 	assertBlockSnapshotReplacesRegions(t, result.Blocks, result.Members)
+}
+
+func TestFetchOnlineBlocksSupplementsEmptyIndexFromSpBlock(t *testing.T) {
+	python := testPython(t)
+	tdxhy := []byte("1|600000|T1001|||\n")
+	fakeRoot, manifest := writeFakeEltdx(t, map[string][]byte{industryMappingFile: tdxhy})
+	t.Setenv("TDX2DB_PYTHON", python)
+	t.Setenv("PYTHONPATH", fakeRoot)
+	t.Setenv("ELTDX_FAKE_META", manifest)
+	t.Setenv("ELTDX_FAKE_CONTENT_DIR", filepath.Join(fakeRoot, "content"))
+	t.Setenv("ELTDX_FAKE_CALLS", filepath.Join(fakeRoot, "calls.txt"))
+
+	cacheDir := t.TempDir()
+	writeBoardCatalogFixture(t, cacheDir)
+	spBlock := []byte("" +
+		"#中证500,1,,20070115,,,\n1600000\n" +
+		"#中证1000,2,,20141017,,,\n0000001\n1600000\n")
+	encodedSpBlock, err := simplifiedchinese.GB18030.NewEncoder().Bytes(spBlock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cacheDir, spBlockFile), encodedSpBlock, 0644); err != nil {
+		t.Fatal(err)
+	}
+	metadata := boardCacheMetadata{
+		Files:            make(map[string]boardCacheFileMetadata),
+		CatalogCheckedAt: time.Now().Format("2006-01-02"),
+	}
+	sum := md5.Sum(tdxhy)
+	metadata.Files[industryMappingFile] = boardCacheFileMetadata{
+		MD5:  hex.EncodeToString(sum[:]),
+		Size: int64(len(tdxhy)),
+	}
+	writeBoardCacheMetadataFixture(t, cacheDir, metadata)
+
+	result, err := FetchOnlineBlocks(context.Background(), BlockFetchOptions{
+		BoardCacheDir: cacheDir,
+		TempDir:       t.TempDir(),
+		IndexNames: []model.SymbolName{
+			{Symbol: "sh000300", Name: "沪深300", Class: model.ClassIndex},
+			{Symbol: "sz399300", Name: "沪深300", Class: model.ClassIndex},
+			{Symbol: "sh000852", Name: "中证1000", Class: model.ClassIndex},
+			{Symbol: "sz399852", Name: "中证1000", Class: model.ClassIndex},
+			{Symbol: "sh000905", Name: "中证500", Class: model.ClassIndex},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Stats.IndexMatched != 3 || result.Stats.IndexAliases != 2 ||
+		result.Stats.IndexUnmatched != 1 {
+		t.Fatalf("unexpected index stats: %+v", result.Stats)
+	}
+	membersByBlock := make(map[string]map[string]bool)
+	for _, member := range result.Members {
+		if membersByBlock[member.BlockCode] == nil {
+			membersByBlock[member.BlockCode] = make(map[string]bool)
+		}
+		membersByBlock[member.BlockCode][member.StockSymbol] = true
+	}
+	for _, code := range []string{"sh000852", "sz399852"} {
+		if len(membersByBlock[code]) != 2 ||
+			!membersByBlock[code]["sz000001"] || !membersByBlock[code]["sh600000"] {
+			t.Fatalf("%s members = %+v", code, membersByBlock[code])
+		}
+	}
+	if len(membersByBlock["sh000905"]) != 1 || !membersByBlock["sh000905"]["sz000001"] {
+		t.Fatalf("existing sh000905 section was overwritten: %+v", membersByBlock["sh000905"])
+	}
 }
 
 func assertBlockSnapshotReplacesRegions(t *testing.T, blocks []model.BlockInfo, members []model.BlockMember) {
@@ -411,11 +620,23 @@ func writeBoardCatalogFixture(t *testing.T, dir string) {
 }
 
 func boardCatalogArchive(t *testing.T) []byte {
+	return boardCatalogArchiveWithSpBlock(t,
+		[]byte("#中证500,1,,20070115,,,\n0000001\n"))
+}
+
+func boardCatalogArchiveWithSpBlock(t *testing.T, spBlock []byte) []byte {
 	t.Helper()
 	var inner bytes.Buffer
 	innerWriter := zip.NewWriter(&inner)
 	writeZipFile(t, innerWriter, tdxzsConfigFile, []byte("煤炭|880301|2|1|0|T10\n"))
 	writeZipFile(t, innerWriter, tdxzs3ConfigFile, []byte("煤炭|881001|12|1|0|X10\n"))
+	if spBlock != nil {
+		encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes(spBlock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeZipFile(t, innerWriter, spBlockFile, encoded)
+	}
 	if err := innerWriter.Close(); err != nil {
 		t.Fatal(err)
 	}

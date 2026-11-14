@@ -197,7 +197,7 @@ func readMd1Block(md1Data []byte, seqNum uint16) (md1OHLCV, error) {
 //	[24:28] uint32   volume
 //	[28:32] uint32   reserved
 //
-// scale 由 model.PriceScale(symbol) 决定: 股票=100, ETF/LOF/B股=1000
+// scale 由 model.PriceScale(symbol) 决定: 股票/深市B股=100, 沪市B股/ETF=1000
 func makeDayRecord(date uint32, rec md1OHLCV, scale float64, indexMode bool) []byte {
 	buf := make([]byte, recordSize)
 

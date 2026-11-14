@@ -16,6 +16,7 @@ import (
 const (
 	tdxzsConfigFile       = "tdxzs.cfg"
 	tdxzs3ConfigFile      = "tdxzs3.cfg"
+	spBlockFile           = "spblock.dat"
 	boardCatalogUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) tdx2db"
 )
 
@@ -30,15 +31,29 @@ type boardCatalogResult struct {
 func ensureOnlineBoardCatalog(ctx context.Context, cacheDir, tempDir string) (boardCatalogResult, error) {
 	result := boardCatalogResult{}
 	cacheReady := hasBoardCatalog(cacheDir)
+	spBlockReady := boardCatalogFileExists(cacheDir, spBlockFile)
 	metadata := readBoardCacheMetadata(cacheDir)
 	today := time.Now().Format("2006-01-02")
+	if cacheReady && metadata.CatalogCheckedAt == today && !spBlockReady {
+		sharedArchive := ""
+		if tempDir != "" {
+			sharedArchive = filepath.Join(tempDir, "gbbq.zip")
+		}
+		if err := installSharedSpBlock(ctx, cacheDir, sharedArchive); err != nil {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("当日板块目录缓存缺少 %s，无法从本次 gbbq.zip 补充，保留原缓存: %v", spBlockFile, err))
+		}
+		return result, nil
+	}
 	if cacheReady && metadata.CatalogCheckedAt == today {
 		return result, nil
 	}
 	if tempDir != "" {
 		sharedArchive := filepath.Join(tempDir, "gbbq.zip")
 		if _, err := os.Stat(sharedArchive); err == nil {
-			if err := installBoardCatalog(ctx, cacheDir, sharedArchive, &metadata, today); err == nil {
+			warnings, err := installBoardCatalog(ctx, cacheDir, sharedArchive, &metadata, today)
+			result.Warnings = append(result.Warnings, warnings...)
+			if err == nil {
 				return result, writeBoardCacheMetadata(cacheDir, metadata)
 			} else if cacheReady {
 				result.Warnings = append(result.Warnings,
@@ -106,7 +121,9 @@ func ensureOnlineBoardCatalog(ctx context.Context, cacheDir, tempDir string) (bo
 		return result, fmt.Errorf("failed to download online board catalog: %w", err)
 	}
 
-	if err := installBoardCatalog(ctx, cacheDir, archivePath, &metadata, today); err != nil {
+	warnings, err := installBoardCatalog(ctx, cacheDir, archivePath, &metadata, today)
+	result.Warnings = append(result.Warnings, warnings...)
+	if err != nil {
 		result.Warnings = append(result.Warnings,
 			fmt.Sprintf("解析在线行业目录失败，继续使用缓存: %v", err))
 		if cacheReady {
@@ -124,11 +141,16 @@ func hasBoardCatalog(dir string) bool {
 		return false
 	}
 	for _, name := range []string{tdxzsConfigFile, tdxzs3ConfigFile, infoHarborBlockFile} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+		if !boardCatalogFileExists(dir, name) {
 			return false
 		}
 	}
 	return true
+}
+
+func boardCatalogFileExists(dir, name string) bool {
+	info, err := os.Stat(filepath.Join(dir, name))
+	return err == nil && !info.IsDir()
 }
 
 func downloadBoardCatalog(ctx context.Context, target string) error {
@@ -164,7 +186,7 @@ func extractBoardCatalog(archivePath string) (map[string][]byte, error) {
 	defer outer.Close()
 
 	var zhb []byte
-	result := make(map[string][]byte, 3)
+	result := make(map[string][]byte, 4)
 	for _, file := range outer.File {
 		name := filepath.Base(file.Name)
 		if strings.EqualFold(name, "zhb.zip") || strings.EqualFold(name, infoHarborBlockFile) {
@@ -194,7 +216,7 @@ func extractBoardCatalog(archivePath string) (map[string][]byte, error) {
 	}
 	for _, file := range inner.File {
 		name := filepath.Base(file.Name)
-		if name != tdxzsConfigFile && name != tdxzs3ConfigFile {
+		if name != tdxzsConfigFile && name != tdxzs3ConfigFile && name != spBlockFile {
 			continue
 		}
 		reader, err := file.Open()
@@ -208,10 +230,27 @@ func extractBoardCatalog(archivePath string) (map[string][]byte, error) {
 		}
 		result[name] = content
 	}
-	if len(result) != 3 {
-		return nil, fmt.Errorf("gbbq.zip is missing infoharbor_block.dat, tdxzs.cfg or tdxzs3.cfg")
+	for _, name := range []string{infoHarborBlockFile, tdxzsConfigFile, tdxzs3ConfigFile} {
+		if _, ok := result[name]; !ok {
+			return nil, fmt.Errorf("gbbq.zip is missing infoharbor_block.dat, tdxzs.cfg or tdxzs3.cfg")
+		}
 	}
 	return result, nil
+}
+
+func installSharedSpBlock(ctx context.Context, cacheDir, archivePath string) error {
+	if archivePath == "" {
+		return fmt.Errorf("本次下载的 gbbq.zip 不存在")
+	}
+	configs, err := extractBoardCatalog(archivePath)
+	if err != nil {
+		return err
+	}
+	content, ok := configs[spBlockFile]
+	if !ok {
+		return fmt.Errorf("gbbq.zip 不包含 %s", spBlockFile)
+	}
+	return installSpBlock(ctx, cacheDir, content)
 }
 
 func installBoardCatalog(
@@ -220,45 +259,87 @@ func installBoardCatalog(
 	archivePath string,
 	metadata *boardCacheMetadata,
 	checkedAt string,
-) error {
+) ([]string, error) {
+	var warnings []string
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return err
+		return warnings, err
 	}
 	configs, err := extractBoardCatalog(archivePath)
 	if err != nil {
-		return err
+		return warnings, err
 	}
-	stagedPaths := make(map[string]string, len(configs))
-	for name, content := range configs {
+	coreFiles := []string{infoHarborBlockFile, tdxzsConfigFile, tdxzs3ConfigFile}
+	stagedPaths := make(map[string]string, len(coreFiles))
+	for _, name := range coreFiles {
+		if err := ctx.Err(); err != nil {
+			return warnings, err
+		}
+		content := configs[name]
 		path := filepath.Join(cacheDir, name+".download")
 		if err := os.WriteFile(path, content, 0644); err != nil {
-			return fmt.Errorf("failed to stage online %s: %w", name, err)
+			return warnings, fmt.Errorf("failed to stage online %s: %w", name, err)
 		}
 		defer os.Remove(path)
 		stagedPaths[name] = path
 	}
-	for name, path := range stagedPaths {
+	for _, name := range coreFiles {
+		if err := ctx.Err(); err != nil {
+			return warnings, err
+		}
+		path := stagedPaths[name]
 		if name == infoHarborBlockFile {
 			if _, err := parseInfoHarbor(ctx, path); err != nil {
-				return fmt.Errorf("failed to parse online %s: %w", name, err)
+				return warnings, fmt.Errorf("failed to parse online %s: %w", name, err)
 			}
 			continue
 		}
 		definitions, found, err := parseBoardCatalogFile(ctx, path, path)
 		if err != nil {
-			return fmt.Errorf("failed to parse online %s: %w", name, err)
+			return warnings, fmt.Errorf("failed to parse online %s: %w", name, err)
 		}
 		if !found || len(definitions) == 0 {
-			return fmt.Errorf("online %s contains no board definitions", name)
+			return warnings, fmt.Errorf("online %s contains no board definitions", name)
 		}
 	}
-	for name, stagedPath := range stagedPaths {
-		if err := commitBoardSnapshot(stagedPath, filepath.Join(cacheDir, name)); err != nil {
-			return err
+	for _, name := range coreFiles {
+		if err := ctx.Err(); err != nil {
+			return warnings, err
 		}
+		stagedPath := stagedPaths[name]
+		if err := commitBoardSnapshot(stagedPath, filepath.Join(cacheDir, name)); err != nil {
+			return warnings, err
+		}
+	}
+	if content, ok := configs[spBlockFile]; !ok {
+		warnings = append(warnings, fmt.Sprintf("gbbq.zip 缺少 %s，保留旧指数补充数据", spBlockFile))
+	} else if err := installSpBlock(ctx, cacheDir, content); err != nil {
+		warnings = append(warnings,
+			fmt.Sprintf("解析在线 %s 失败，保留旧指数补充数据: %v", spBlockFile, err))
 	}
 	metadata.CatalogCheckedAt = checkedAt
-	return nil
+	return compactStrings(warnings), nil
+}
+
+func installSpBlock(ctx context.Context, cacheDir string, content []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	stagedPath := filepath.Join(cacheDir, spBlockFile+".download")
+	if err := os.WriteFile(stagedPath, content, 0644); err != nil {
+		return fmt.Errorf("failed to stage online %s: %w", spBlockFile, err)
+	}
+	defer os.Remove(stagedPath)
+	response, err := parseSpBlock(ctx, stagedPath, nil, nil)
+	if err != nil {
+		return err
+	}
+	if len(response.Blocks) == 0 || len(response.Members) == 0 {
+		return fmt.Errorf("%s contains no target index members", spBlockFile)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return commitBoardSnapshot(stagedPath, filepath.Join(cacheDir, spBlockFile))
 }
 
 func prepareStaticBoardDir(

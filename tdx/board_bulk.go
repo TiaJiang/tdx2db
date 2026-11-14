@@ -21,7 +21,18 @@ const (
 	industryMappingFile    = "tdxhy.cfg"
 )
 
-var infoHarborMemberPattern = regexp.MustCompile(`([012])#(\d{6})`)
+var (
+	infoHarborMemberPattern = regexp.MustCompile(`([012])#(\d{6})`)
+	spBlockMemberPattern    = regexp.MustCompile(`^([012])(\d{6})$`)
+	spBlockIndexCodes       = map[string]string{
+		"深证成指":   "399001",
+		"中证A500": "000510",
+		"中证500":  "000905",
+		"中证1000": "000852",
+		"中证2000": "932000",
+		"国证2000": "399303",
+	}
+)
 
 type boardSyncTask struct {
 	CacheDir string   `json:"cache_dir"`
@@ -245,16 +256,27 @@ func writeBoardCacheMetadata(cacheDir string, metadata boardCacheMetadata) error
 	return nil
 }
 
-func parseInfoHarbor(ctx context.Context, path string) (decodedBlockResponse, error) {
+func readBoardFileGB18030(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return decodedBlockResponse{}, fmt.Errorf("failed to read %s: %w", path, err)
+		return nil, fmt.Errorf("failed to read %s: %w", path, err)
 	}
 	decoded, err := simplifiedchinese.GB18030.NewDecoder().Bytes(data)
 	if err != nil {
-		return decodedBlockResponse{}, fmt.Errorf("failed to decode %s as GB18030: %w", path, err)
+		return nil, fmt.Errorf("failed to decode %s as GB18030: %w", path, err)
 	}
+	return decoded, nil
+}
 
+func parseInfoHarbor(ctx context.Context, path string) (decodedBlockResponse, error) {
+	decoded, err := readBoardFileGB18030(path)
+	if err != nil {
+		return decodedBlockResponse{}, err
+	}
+	return parseInfoHarborContent(ctx, path, decoded)
+}
+
+func parseInfoHarborContent(ctx context.Context, path string, decoded []byte) (decodedBlockResponse, error) {
 	type currentBlock struct {
 		info     model.BlockInfo
 		declared int
@@ -361,11 +383,15 @@ func parseInfoHarbor(ctx context.Context, path string) (decodedBlockResponse, er
 }
 
 func parseInfoHarborAll(ctx context.Context, path string, names []model.SymbolName) (infoHarborParseResult, error) {
-	response, err := parseInfoHarbor(ctx, path)
+	decoded, err := readBoardFileGB18030(path)
 	if err != nil {
 		return infoHarborParseResult{}, err
 	}
-	indices, indexErr := parseInfoHarborIndexes(ctx, path, names)
+	response, err := parseInfoHarborContent(ctx, path, decoded)
+	if err != nil {
+		return infoHarborParseResult{}, err
+	}
+	indices, indexErr := parseInfoHarborIndexesContent(ctx, path, decoded, names)
 	return infoHarborParseResult{
 		Response: response,
 		Indices:  indices,
@@ -374,15 +400,19 @@ func parseInfoHarborAll(ctx context.Context, path string, names []model.SymbolNa
 }
 
 func parseInfoHarborIndexes(ctx context.Context, path string, names []model.SymbolName) (indexBlockParseResult, error) {
-	data, err := os.ReadFile(path)
+	decoded, err := readBoardFileGB18030(path)
 	if err != nil {
-		return indexBlockParseResult{}, fmt.Errorf("failed to read %s: %w", path, err)
+		return indexBlockParseResult{}, err
 	}
-	decoded, err := simplifiedchinese.GB18030.NewDecoder().Bytes(data)
-	if err != nil {
-		return indexBlockParseResult{}, fmt.Errorf("failed to decode %s as GB18030: %w", path, err)
-	}
+	return parseInfoHarborIndexesContent(ctx, path, decoded, names)
+}
 
+func parseInfoHarborIndexesContent(
+	ctx context.Context,
+	path string,
+	decoded []byte,
+	names []model.SymbolName,
+) (indexBlockParseResult, error) {
 	type currentIndex struct {
 		name     string
 		declared int
@@ -526,6 +556,153 @@ func parseInfoHarborIndexes(ctx context.Context, path string, names []model.Symb
 		Warnings: compactStrings(warnings),
 	}
 	return result, nil
+}
+
+func parseSpBlock(
+	ctx context.Context,
+	path string,
+	names []model.SymbolName,
+	existingCodes map[string]bool,
+) (decodedBlockResponse, error) {
+	decoded, err := readBoardFileGB18030(path)
+	if err != nil {
+		return decodedBlockResponse{}, err
+	}
+
+	type currentIndex struct {
+		name        string
+		declared    int
+		hasDeclared bool
+		blockCodes  []string
+		members     map[string]bool
+		invalid     int
+		skipped     int
+	}
+	nameMap := buildIndexNameMap(names)
+	infos := make(map[string]model.BlockInfo)
+	members := make(map[string]model.BlockMember)
+	var warnings []string
+	var current *currentIndex
+
+	flush := func() {
+		if current == nil {
+			return
+		}
+		for _, blockCode := range current.blockCodes {
+			if existingCodes[blockCode] {
+				return
+			}
+		}
+		if current.hasDeclared && current.declared != len(current.members) {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: %s 声明成员数 %d，实际去重成员数 %d",
+				spBlockFile, current.name, current.declared, len(current.members),
+			))
+		}
+		if current.invalid > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: %s 存在 %d 条非法成员行", spBlockFile, current.name, current.invalid,
+			))
+		}
+		if current.skipped > 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: %s 跳过 %d 个无法推断为股票的成员",
+				spBlockFile, current.name, current.skipped,
+			))
+		}
+		if len(current.members) == 0 {
+			warnings = append(warnings, fmt.Sprintf(
+				"%s: %s 没有合法成员，保留旧指数数据（如有）", spBlockFile, current.name,
+			))
+			return
+		}
+		for _, blockCode := range current.blockCodes {
+			infos[blockCode] = model.BlockInfo{
+				BlockType:   blockTypeIndex,
+				BlockName:   current.name,
+				BlockSymbol: blockCode,
+				BlockCode:   blockCode,
+				BlockLevel:  1,
+			}
+			for symbol := range current.members {
+				members[symbol+"\x00"+blockCode] = model.BlockMember{
+					StockSymbol: symbol,
+					BlockCode:   blockCode,
+				}
+			}
+		}
+	}
+
+	lines := strings.Split(string(decoded), "\n")
+	for i, line := range lines {
+		if i%1000 == 0 {
+			if err := ctx.Err(); err != nil {
+				return decodedBlockResponse{}, err
+			}
+		}
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			flush()
+			current = nil
+			fields := strings.Split(line, ",")
+			name := strings.TrimSpace(strings.TrimPrefix(fields[0], "#"))
+			fixedCode, target := spBlockIndexCodes[name]
+			if !target {
+				continue
+			}
+			blockCodes := append([]string(nil), nameMap[name]...)
+			if len(blockCodes) == 0 {
+				if blockCode := normalizeBulkBlockCode(fixedCode, ""); blockCode != "" {
+					blockCodes = []string{blockCode}
+				}
+			}
+			if len(blockCodes) == 0 {
+				warnings = append(warnings, fmt.Sprintf(
+					"%s: %s 无法确定指数代码", spBlockFile, name,
+				))
+				continue
+			}
+			declared := 0
+			hasDeclared := false
+			if len(fields) > 1 && strings.TrimSpace(fields[1]) != "" {
+				declared, _ = strconv.Atoi(strings.TrimSpace(fields[1]))
+				hasDeclared = true
+			}
+			current = &currentIndex{
+				name:        name,
+				declared:    declared,
+				hasDeclared: hasDeclared,
+				blockCodes:  blockCodes,
+				members:     make(map[string]bool),
+			}
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		match := spBlockMemberPattern.FindStringSubmatch(line)
+		if len(match) == 0 {
+			current.invalid++
+			continue
+		}
+		symbol := marketSymbolFromID(match[1], match[2])
+		stockSymbol, ok := stockSymbolFromIndexMember(symbol)
+		if !ok {
+			current.skipped++
+			continue
+		}
+		current.members[stockSymbol] = true
+	}
+	flush()
+
+	return decodedBlockResponse{
+		Blocks:   mapValuesSorted(infos),
+		Members:  mapMembersSorted(members),
+		Warnings: compactStrings(warnings),
+	}, nil
 }
 
 func buildIndexNameMap(names []model.SymbolName) map[string][]string {

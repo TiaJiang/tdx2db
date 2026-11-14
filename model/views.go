@@ -57,8 +57,8 @@ func DeprecatedViewNames() []string {
 //
 // 命名约定：v_<class>_<fq>，class 放前面便于 tab-complete 按归属浏览
 // （v_stock_<TAB> / v_etf_<TAB> / v_bstock_<TAB> 各列出 qfq/hfq，v_index 单独提供指数原始日线）。
-// stock / etf / bstock 拆开维护：ETF/B 股价格 scale=1000、ROUND 精度 3 位，
-// stock scale=100、ROUND 精度 2 位。ETF 视图不暴露 turnover/floatmv/totalmv。
+// stock / etf / bstock 拆开维护：ETF/B 股 ROUND 精度 3 位，stock 价格 ROUND 2 位。
+// ETF 视图不暴露 turnover/floatmv/totalmv。
 var (
 	ViewStockQFQ  = DefineView(adjustedQFQView("v_stock_qfq", ClassStock, 2, true))
 	ViewStockHFQ  = DefineView(adjustedHFQView("v_stock_hfq", ClassStock, 2, true))

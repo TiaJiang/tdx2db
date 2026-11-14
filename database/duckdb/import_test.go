@@ -10,6 +10,66 @@ import (
 	"github.com/jing2uo/tdx2db/utils"
 )
 
+func TestImportGBBQKeepsOldRowsWhenNewCSVFails(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.duckdb")
+	driver, err := NewDuckDBDriver(&url.URL{Scheme: "duckdb", Path: dbPath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	defer driver.Close()
+	if err := driver.InitSchema(); err != nil {
+		t.Fatal(err)
+	}
+
+	csvPath := filepath.Join(t.TempDir(), "gbbq.csv")
+	writer, err := utils.NewCSVWriter[model.GbbqData](csvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := model.GbbqData{
+		Category: 1,
+		Symbol:   "sh600000",
+		Date:     time.Date(2026, 11, 13, 0, 0, 0, 0, time.UTC),
+		C1:       10,
+		C2:       2,
+		C3:       3,
+		C4:       4,
+	}
+	if err := writer.Write([]model.GbbqData{row}); err != nil {
+		writer.Close()
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := driver.ImportGBBQ(csvPath); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := driver.ImportGBBQ(filepath.Join(t.TempDir(), "missing.csv")); err == nil {
+		t.Fatal("expected missing gbbq CSV to fail")
+	}
+
+	var count int64
+	if err := driver.db.Get(&count, "SELECT COUNT(*) FROM "+model.TableGbbq.TableName); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("gbbq row count after failed import = %d, want 1", count)
+	}
+	var c1 float64
+	if err := driver.db.Get(&c1,
+		"SELECT c1 FROM "+model.TableGbbq.TableName+" WHERE symbol = 'sh600000'"); err != nil {
+		t.Fatal(err)
+	}
+	if c1 != 10 {
+		t.Fatalf("gbbq c1 after failed import = %v, want 10", c1)
+	}
+}
+
 func TestImportBasicUpsertsBySymbolAndDate(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.duckdb")
 	driver, err := NewDuckDBDriver(&url.URL{Scheme: "duckdb", Path: dbPath})

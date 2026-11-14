@@ -52,6 +52,40 @@ func TestParseInfoHarborBlocksAndWarnsOnCountMismatch(t *testing.T) {
 	}
 }
 
+func TestParseInfoHarborAllParsesConceptAndIndexSections(t *testing.T) {
+	path := filepath.Join(t.TempDir(), infoHarborBlockFile)
+	text := "" +
+		"#GN_概念甲,1,880501,20200101,20260101,,\n0#000001\n" +
+		"#ZS_中证500,1,,20070115,,,\n1#600000\n"
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := parseInfoHarborAll(context.Background(), path, []model.SymbolName{
+		{Symbol: "sh000905", Name: "中证500", Class: model.ClassIndex},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IndexErr != nil {
+		t.Fatal(result.IndexErr)
+	}
+	if len(result.Response.Blocks) != 1 || result.Response.Blocks[0].BlockCode != "sh880501" {
+		t.Fatalf("unexpected concept blocks: %+v", result.Response.Blocks)
+	}
+	if len(result.Indices.Response.Blocks) != 1 || result.Indices.Response.Blocks[0].BlockCode != "sh000905" {
+		t.Fatalf("unexpected index blocks: %+v", result.Indices.Response.Blocks)
+	}
+	if len(result.Indices.Response.Members) != 1 ||
+		result.Indices.Response.Members[0].StockSymbol != "sh600000" {
+		t.Fatalf("unexpected index members: %+v", result.Indices.Response.Members)
+	}
+}
+
 func TestParseInfoHarborIndexesMapsUniqueNamesAndExpandsAliases(t *testing.T) {
 	path := filepath.Join(t.TempDir(), infoHarborBlockFile)
 	text := "" +
@@ -273,6 +307,154 @@ func TestStockSymbolFromIndexMemberHandlesMarketsAndBareCodes(t *testing.T) {
 			t.Errorf("stockSymbolFromIndexMember(%q) = (%q, %v), want (%q, %v)",
 				tt.code, got, ok, tt.want, tt.ok)
 		}
+	}
+}
+
+func TestParseSpBlockUsesNameMapAndSkipsNonStockMembers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), spBlockFile)
+	text := "" +
+		"#中证500,2,,20070115,,,\n" +
+		"0000001\n" +
+		"1600000\n" +
+		"0000001\n" +
+		"1000300\n" +
+		"1880301\n" +
+		"123456\n" +
+		"3999999\n" +
+		"#融资融券,1,,,,,\n" +
+		"0000001\n"
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := parseSpBlock(context.Background(), path, []model.SymbolName{
+		{Symbol: "sh000905", Name: "中证500", Class: model.ClassIndex},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Blocks) != 1 || response.Blocks[0].BlockCode != "sh000905" ||
+		response.Blocks[0].BlockType != blockTypeIndex {
+		t.Fatalf("unexpected blocks: %+v", response.Blocks)
+	}
+	members := make(map[string]bool)
+	for _, member := range response.Members {
+		if member.BlockCode != "sh000905" {
+			t.Fatalf("unexpected block member: %+v", member)
+		}
+		members[member.StockSymbol] = true
+	}
+	if len(members) != 2 || !members["sz000001"] || !members["sh600000"] {
+		t.Fatalf("unexpected members: %+v", response.Members)
+	}
+	warnings := strings.Join(response.Warnings, "\n")
+	if !strings.Contains(warnings, "2 条非法成员行") ||
+		!strings.Contains(warnings, "跳过 2 个无法推断为股票的成员") {
+		t.Fatalf("unexpected warnings: %+v", response.Warnings)
+	}
+}
+
+func TestParseSpBlockUsesFixedMappingAndExpandsAliases(t *testing.T) {
+	path := filepath.Join(t.TempDir(), spBlockFile)
+	text := "" +
+		"#深证成指,1,,19950123,,,\n0000001\n" +
+		"#中证1000,1,,20141017,,,\n1600000\n"
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := parseSpBlock(context.Background(), path, []model.SymbolName{
+		{Symbol: "sh000852", Name: "中证1000", Class: model.ClassIndex},
+		{Symbol: "sz399852", Name: "中证1000", Class: model.ClassIndex},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := make(map[string]bool)
+	for _, info := range response.Blocks {
+		codes[info.BlockCode] = true
+	}
+	for _, code := range []string{"sz399001", "sh000852", "sz399852"} {
+		if !codes[code] {
+			t.Fatalf("missing block %s: %+v", code, response.Blocks)
+		}
+	}
+	if len(response.Members) != 3 {
+		t.Fatalf("members = %d, want 3: %+v", len(response.Members), response.Members)
+	}
+}
+
+func TestParseSpBlockSkipsSectionWithExistingMappedCode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), spBlockFile)
+	text := "#中证500,1,,20070115,,,\n1600000\n"
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := parseSpBlock(context.Background(), path, []model.SymbolName{
+		{Symbol: "sh000905", Name: "中证500", Class: model.ClassIndex},
+		{Symbol: "sz399905", Name: "中证500", Class: model.ClassIndex},
+	}, map[string]bool{"sh000905": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Blocks) != 0 || len(response.Members) != 0 {
+		t.Fatalf("existing index section was overwritten: %+v", response)
+	}
+}
+
+func TestParseSpBlockDoesNotWarnWhenHeaderOmitsDeclaredCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), spBlockFile)
+	text := "#中证500\n0000001\n"
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := parseSpBlock(context.Background(), path, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Members) != 1 || len(response.Warnings) != 0 {
+		t.Fatalf("unexpected response: %+v", response)
+	}
+}
+
+func TestParseSpBlockHonorsContextCancellation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), spBlockFile)
+	var text strings.Builder
+	text.WriteString("#中证500,1001,,20070115,,,\n")
+	for index := 1; index <= 1000; index++ {
+		fmt.Fprintf(&text, "0%06d\n", index)
+	}
+	encoded, err := simplifiedchinese.GB18030.NewEncoder().Bytes([]byte(text.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, encoded, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = parseSpBlock(ctx, path, nil, nil)
+	if err != context.Canceled {
+		t.Fatalf("error = %v, want context.Canceled", err)
 	}
 }
 

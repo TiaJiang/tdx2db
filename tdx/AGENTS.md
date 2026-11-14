@@ -44,7 +44,7 @@
 - Min: `year = date/2048 + 2004`, `month = (date%2048)/100`, `day = (date%2048)%100`
 
 **Price conversion:**
-- 价格刻度由 `model.PriceScale(symbol)` 给出：股票/指数/板块 = 100，ETF/LOF/B股 = 1000，可转债 = 10000
+- 价格刻度由 `model.PriceScale(symbol)` 给出：股票/指数/板块/深市 B 股 = 100，沪市 B 股/ETF/LOF = 1000，可转债 = 10000
 - 解析每条记录时按 symbol 取 scale，再 `float64(raw) / scale`
 - Amount stored as float32 bits
 

@@ -91,7 +91,8 @@ func ClassifyCode(symbol string) string {
 // TDX 把不同品种用不同分辨率存储:
 //   - 股票/指数/板块/北交所: 单位 0.01 元 (分),  返回 100
 //   - ETF/LOF/老封基 (class=etf): 单位 0.001 元,       返回 1000
-//   - 沪市 B 股 (sh900) / 深市 B 股 (sz20): 单位 0.001 元 (USD/HKD), 返回 1000
+//   - 沪市 B 股 (sh900): 单位 0.001 美元, 返回 1000
+//   - 深市 B 股 (sz20): 单位 0.01 港币, 返回 100
 //   - 可转债: 单位 0.0001 元, 返回 10000
 //
 // 未识别的 symbol 默认按股票 (100) 处理。
@@ -102,8 +103,11 @@ func PriceScale(symbol string) float64 {
 	case ClassCBond:
 		return 10000.0
 	}
-	if strings.HasPrefix(symbol, "sh900") || strings.HasPrefix(symbol, "sz20") {
+	if strings.HasPrefix(symbol, "sh900") {
 		return 1000.0
+	}
+	if strings.HasPrefix(symbol, "sz20") {
+		return 100.0
 	}
 	return 100.0
 }

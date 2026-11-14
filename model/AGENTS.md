@@ -56,7 +56,7 @@
 
 **Classification helpers (classify.go):**
 - `ClassifyCode(symbol)` → stock/index/etf/block/unknown，按 (market, prefix) 最长前缀匹配
-- `PriceScale(symbol)` → 100 (股票/指数/板块)、1000 (ETF/LOF/B股) 或 10000 (可转债) 用于解析 TDX 原始整数价格
+- `PriceScale(symbol)` → 100 (股票/指数/板块/深市 B 股)、1000 (沪市 B 股/ETF/LOF) 或 10000 (可转债) 用于解析 TDX 原始整数价格
 - `SymbolFromCode(code)` → 6 位裸数字反查 "shXXXXXX"/"szXXXXXX"，仅考虑 stock/etf/bstock 避免 "000" 歧义
 
 ## ANTI-PATTERNS
